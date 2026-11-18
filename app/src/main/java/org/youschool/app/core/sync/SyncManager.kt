@@ -53,7 +53,8 @@ class SyncManager(
 
     init {
         scope.launch {
-            networkMonitor.isOnline.collect { online ->
+            combine(networkMonitor.isOnline, repository.positionState) { online, position -> online && position.active != null }
+                .distinctUntilChanged().collect { online ->
                 if (online) {
                     triggerSync()
                 }
@@ -71,6 +72,8 @@ class SyncManager(
                 if (result.isFailure) {
                     _lastError.value = result.exceptionOrNull()?.message ?: "Ошибка синхронизации"
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _lastError.value = e.message
             } finally {

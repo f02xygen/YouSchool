@@ -11,62 +11,62 @@ import org.youschool.app.core.database.entities.ReadGradeEntity
 
 @Dao
 interface LessonDao {
-    @Query("SELECT * FROM lessons WHERE dateMillis >= :startOfDay AND dateMillis < :endOfDay ORDER BY numInDay ASC")
-    fun getLessonsForDay(startOfDay: Long, endOfDay: Long): Flow<List<LessonEntity>>
+    @Query("SELECT * FROM lessons WHERE accountKey = :accountKey AND positionId = :positionId AND dateMillis >= :startOfDay AND dateMillis < :endOfDay ORDER BY numInDay ASC")
+    fun getLessonsForDay(startOfDay: Long, endOfDay: Long, accountKey: String, positionId: Long): Flow<List<LessonEntity>>
 
-    @Query("SELECT * FROM lessons WHERE id = :lessonId")
-    suspend fun getLessonById(lessonId: Long): LessonEntity?
+    @Query("SELECT * FROM lessons WHERE accountKey = :accountKey AND positionId = :positionId AND id = :lessonId")
+    suspend fun getLessonById(lessonId: Long, accountKey: String, positionId: Long): LessonEntity?
 
-    @Query("SELECT * FROM lessons WHERE homeworkText != '' ORDER BY dateMillis DESC")
-    fun getAllLessonsWithHomework(): Flow<List<LessonEntity>>
+    @Query("SELECT * FROM lessons WHERE accountKey = :accountKey AND positionId = :positionId AND homeworkText != '' ORDER BY dateMillis DESC")
+    fun getAllLessonsWithHomework(accountKey: String, positionId: Long): Flow<List<LessonEntity>>
 
-    @Query("SELECT * FROM lessons WHERE (homeworkText != '' OR homeworkFilesJson != '[]') AND dateMillis >= :todayStartMillis ORDER BY dateMillis ASC, numInDay ASC")
-    fun getUpcomingHomeworks(todayStartMillis: Long): Flow<List<LessonEntity>>
+    @Query("SELECT * FROM lessons WHERE accountKey = :accountKey AND positionId = :positionId AND (homeworkText != '' OR homeworkFilesJson != '[]') AND dateMillis >= :todayStartMillis ORDER BY dateMillis ASC, numInDay ASC")
+    fun getUpcomingHomeworks(todayStartMillis: Long, accountKey: String, positionId: Long): Flow<List<LessonEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertLessons(lessons: List<LessonEntity>)
 
-    @Query("DELETE FROM lessons WHERE dateMillis >= :startOfDay AND dateMillis < :endOfDay")
-    suspend fun deleteLessonsForDay(startOfDay: Long, endOfDay: Long)
+    @Query("DELETE FROM lessons WHERE accountKey = :accountKey AND positionId = :positionId AND dateMillis >= :startOfDay AND dateMillis < :endOfDay")
+    suspend fun deleteLessonsForDay(startOfDay: Long, endOfDay: Long, accountKey: String, positionId: Long)
 
     @Transaction
-    suspend fun replaceLessonsForRange(startOfDay: Long, endOfDay: Long, lessons: List<LessonEntity>) {
-        deleteLessonsForDay(startOfDay, endOfDay)
+    suspend fun replaceLessonsForRange(startOfDay: Long, endOfDay: Long, lessons: List<LessonEntity>, accountKey: String, positionId: Long) {
+        deleteLessonsForDay(startOfDay, endOfDay, accountKey, positionId)
         insertLessons(lessons)
     }
 }
 
 @Dao
 interface GradeDao {
-    @Query("SELECT * FROM grades ORDER BY id DESC")
-    fun getAllGrades(): Flow<List<GradeEntity>>
+    @Query("SELECT * FROM grades WHERE accountKey = :accountKey AND positionId = :positionId ORDER BY id DESC")
+    fun getAllGrades(accountKey: String, positionId: Long): Flow<List<GradeEntity>>
 
-    @Query("SELECT * FROM grades")
-    suspend fun getAllGradesSnapshot(): List<GradeEntity>
+    @Query("SELECT * FROM grades WHERE accountKey = :accountKey AND positionId = :positionId")
+    suspend fun getAllGradesSnapshot(accountKey: String, positionId: Long): List<GradeEntity>
 
-    @Query("SELECT * FROM grades WHERE subject = :subjectName ORDER BY id DESC")
-    fun getGradesForSubject(subjectName: String): Flow<List<GradeEntity>>
+    @Query("SELECT * FROM grades WHERE accountKey = :accountKey AND positionId = :positionId AND subject = :subjectName ORDER BY id DESC")
+    fun getGradesForSubject(subjectName: String, accountKey: String, positionId: Long): Flow<List<GradeEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertGrades(grades: List<GradeEntity>)
 
-    @Query("DELETE FROM grades")
-    suspend fun clearAllGrades()
+    @Query("DELETE FROM grades WHERE accountKey = :accountKey AND positionId = :positionId")
+    suspend fun clearAllGrades(accountKey: String, positionId: Long)
 
     @Transaction
-    suspend fun replaceAllGrades(grades: List<GradeEntity>) {
-        clearAllGrades()
+    suspend fun replaceAllGrades(grades: List<GradeEntity>, accountKey: String, positionId: Long) {
+        clearAllGrades(accountKey, positionId)
         insertGrades(grades)
     }
 }
 
 @Dao
 interface HomeworkStatusDao {
-    @Query("SELECT * FROM homework_status")
-    fun getAllStatuses(): Flow<List<HomeworkStatusEntity>>
+    @Query("SELECT * FROM homework_status WHERE accountKey = :accountKey AND positionId = :positionId")
+    fun getAllStatuses(accountKey: String, positionId: Long): Flow<List<HomeworkStatusEntity>>
 
-    @Query("SELECT * FROM homework_status WHERE lessonId = :lessonId")
-    suspend fun getStatusForLesson(lessonId: Long): HomeworkStatusEntity?
+    @Query("SELECT * FROM homework_status WHERE accountKey = :accountKey AND positionId = :positionId AND lessonId = :lessonId")
+    suspend fun getStatusForLesson(lessonId: Long, accountKey: String, positionId: Long): HomeworkStatusEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun setStatus(status: HomeworkStatusEntity)
@@ -74,11 +74,11 @@ interface HomeworkStatusDao {
 
 @Dao
 interface ReadGradeDao {
-    @Query("SELECT * FROM read_grades")
-    fun getAllReadGrades(): Flow<List<ReadGradeEntity>>
+    @Query("SELECT * FROM read_grades WHERE accountKey = :accountKey AND positionId = :positionId")
+    fun getAllReadGrades(accountKey: String, positionId: Long): Flow<List<ReadGradeEntity>>
 
-    @Query("SELECT markKey FROM read_grades")
-    suspend fun getAllReadGradeKeys(): List<String>
+    @Query("SELECT markKey FROM read_grades WHERE accountKey = :accountKey AND positionId = :positionId")
+    suspend fun getAllReadGradeKeys(accountKey: String, positionId: Long): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun markAsRead(entities: List<ReadGradeEntity>)
@@ -86,54 +86,54 @@ interface ReadGradeDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun markAsRead(entity: ReadGradeEntity)
 
-    @Query("DELETE FROM read_grades WHERE markKey = :markKey")
-    suspend fun unmarkAsRead(markKey: String)
+    @Query("DELETE FROM read_grades WHERE accountKey = :accountKey AND positionId = :positionId AND markKey = :markKey")
+    suspend fun unmarkAsRead(markKey: String, accountKey: String, positionId: Long)
 
-    @Query("DELETE FROM read_grades WHERE markKey IN (:markKeys)")
-    suspend fun unmarkMultipleAsRead(markKeys: List<String>)
+    @Query("DELETE FROM read_grades WHERE accountKey = :accountKey AND positionId = :positionId AND markKey IN (:markKeys)")
+    suspend fun unmarkMultipleAsRead(markKeys: List<String>, accountKey: String, positionId: Long)
 }
 
 @Dao
 interface PendingHomeworkSyncDao {
-    @Query("SELECT * FROM pending_homework_sync ORDER BY timestamp ASC")
-    fun getAllPending(): Flow<List<PendingHomeworkSyncEntity>>
+    @Query("SELECT * FROM pending_homework_sync WHERE accountKey = :accountKey AND positionId = :positionId ORDER BY timestamp ASC")
+    fun getAllPending(accountKey: String, positionId: Long): Flow<List<PendingHomeworkSyncEntity>>
 
-    @Query("SELECT * FROM pending_homework_sync ORDER BY timestamp ASC")
-    suspend fun getAllPendingList(): List<PendingHomeworkSyncEntity>
+    @Query("SELECT * FROM pending_homework_sync WHERE accountKey = :accountKey AND positionId = :positionId ORDER BY timestamp ASC")
+    suspend fun getAllPendingList(accountKey: String, positionId: Long): List<PendingHomeworkSyncEntity>
 
-    @Query("SELECT * FROM pending_homework_sync WHERE partId = :partId")
-    suspend fun getPendingByPartId(partId: Long): PendingHomeworkSyncEntity?
+    @Query("SELECT * FROM pending_homework_sync WHERE accountKey = :accountKey AND positionId = :positionId AND partId = :partId")
+    suspend fun getPendingByPartId(partId: Long, accountKey: String, positionId: Long): PendingHomeworkSyncEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun enqueue(entity: PendingHomeworkSyncEntity)
 
-    @Query("DELETE FROM pending_homework_sync WHERE partId = :partId")
-    suspend fun remove(partId: Long)
+    @Query("DELETE FROM pending_homework_sync WHERE accountKey = :accountKey AND positionId = :positionId AND partId = :partId")
+    suspend fun remove(partId: Long, accountKey: String, positionId: Long)
 
-    @Query("SELECT COUNT(*) FROM pending_homework_sync")
-    fun getPendingCountFlow(): Flow<Int>
+    @Query("SELECT COUNT(*) FROM pending_homework_sync WHERE accountKey = :accountKey AND positionId = :positionId")
+    fun getPendingCountFlow(accountKey: String, positionId: Long): Flow<Int>
 }
 
 @Dao
 interface PendingHomeworkUploadDao {
-    @Query("SELECT * FROM pending_homework_upload ORDER BY timestamp ASC")
-    fun getAllPendingFlow(): Flow<List<PendingHomeworkUploadEntity>>
+    @Query("SELECT * FROM pending_homework_upload WHERE accountKey = :accountKey AND positionId = :positionId ORDER BY timestamp ASC")
+    fun getAllPendingFlow(accountKey: String, positionId: Long): Flow<List<PendingHomeworkUploadEntity>>
 
-    @Query("SELECT * FROM pending_homework_upload WHERE partId = :partId ORDER BY timestamp ASC")
-    fun getPendingForPartFlow(partId: Long): Flow<List<PendingHomeworkUploadEntity>>
+    @Query("SELECT * FROM pending_homework_upload WHERE accountKey = :accountKey AND positionId = :positionId AND partId = :partId ORDER BY timestamp ASC")
+    fun getPendingForPartFlow(partId: Long, accountKey: String, positionId: Long): Flow<List<PendingHomeworkUploadEntity>>
 
-    @Query("SELECT * FROM pending_homework_upload ORDER BY timestamp ASC")
-    suspend fun getAllPendingList(): List<PendingHomeworkUploadEntity>
+    @Query("SELECT * FROM pending_homework_upload WHERE accountKey = :accountKey AND positionId = :positionId ORDER BY timestamp ASC")
+    suspend fun getAllPendingList(accountKey: String, positionId: Long): List<PendingHomeworkUploadEntity>
 
-    @Query("SELECT * FROM pending_homework_upload WHERE partId = :partId ORDER BY timestamp ASC")
-    suspend fun getPendingForPartList(partId: Long): List<PendingHomeworkUploadEntity>
+    @Query("SELECT * FROM pending_homework_upload WHERE accountKey = :accountKey AND positionId = :positionId AND partId = :partId ORDER BY timestamp ASC")
+    suspend fun getPendingForPartList(partId: Long, accountKey: String, positionId: Long): List<PendingHomeworkUploadEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun enqueue(entity: PendingHomeworkUploadEntity): Long
 
-    @Query("DELETE FROM pending_homework_upload WHERE id = :id")
-    suspend fun remove(id: Long)
+    @Query("DELETE FROM pending_homework_upload WHERE accountKey = :accountKey AND positionId = :positionId AND id = :id")
+    suspend fun remove(id: Long, accountKey: String, positionId: Long)
 
-    @Query("SELECT COUNT(*) FROM pending_homework_upload")
-    fun getPendingCountFlow(): Flow<Int>
+    @Query("SELECT COUNT(*) FROM pending_homework_upload WHERE accountKey = :accountKey AND positionId = :positionId")
+    fun getPendingCountFlow(accountKey: String, positionId: Long): Flow<Int>
 }

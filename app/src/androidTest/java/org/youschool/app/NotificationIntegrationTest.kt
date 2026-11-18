@@ -40,9 +40,12 @@ class NotificationIntegrationTest {
         assumeTrue(manager.areNotificationsEnabled())
         val original = app.themeManager.themeSettings.value
         val prefs = app.getSharedPreferences("youschool_notification_state", Context.MODE_PRIVATE)
-        val userId = app.authManager.getUserId()
+        app.repository.initializePositions()
+        val school = app.repository.positionState.value.active
+        assumeTrue(school != null)
+        val userId = school!!.positionId
         val period = app.apiClient.getDefaultPeriodId(userId).getOrThrow()
-        val key = "grades_${userId}_$period"
+        val key = "grades_${school.key}_$period"
         try {
             app.themeManager.setNotificationsEnabled(true)
             app.themeManager.setGradeNotificationsEnabled(true)

@@ -61,6 +61,11 @@ import org.youschool.app.ui.screens.grades.GradesViewModel
 import org.youschool.app.ui.screens.homework.HomeworkScreen
 import org.youschool.app.ui.screens.homework.HomeworkViewModel
 import org.youschool.app.ui.screens.onboarding.OnboardingScreen
+import org.youschool.app.ui.screens.profile.PositionSelection
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
 import org.youschool.app.ui.screens.profile.ProfileScreen
 import org.youschool.app.ui.screens.schedule.ScheduleScreen
 import org.youschool.app.ui.screens.schedule.ScheduleViewModel
@@ -85,7 +90,28 @@ class MainActivity : ComponentActivity() {
             val syncStatus by app.syncManager.syncStatus.collectAsState()
             val haptic = rememberHaptic()
 
+            val positions by repository.positionState.collectAsState()
+            val positionScope = rememberCoroutineScope()
+            var choosingOrganization by remember { mutableStateOf(false) }
+            var positionError by remember { mutableStateOf<String?>(null) }
+
             YouSchoolTheme(settings = themeSettings) {
+                positionError?.let { message ->
+                    AlertDialog(onDismissRequest = { positionError = null }, title = { Text("Организация и роль") },
+                        text = { Text(message) }, confirmButton = { TextButton(onClick = { positionError = null }) { Text("Понятно") } })
+                }
+                if (repository.isUserLoggedIn() && (positions.active == null || choosingOrganization)) {
+                    PositionSelection(positions,
+                        onSelect = { id -> positionScope.launch {
+                            val result = repository.switchPosition(id)
+                            if (result.isFailure && repository.positionState.value.active != null)
+                                positionError = repository.positionState.value.error
+                            if (repository.positionState.value.active != null) choosingOrganization = false
+                        } },
+                        onRetry = { positionScope.launch { repository.initializePositions() } },
+                        onLogout = { repository.logout(); choosingOrganization = false },
+                        onBack = if (positions.active != null && !positions.busy) ({ choosingOrganization = false }) else null)
+                } else PositionContent(positions.active, positions.revision) {
                 // If logged in and onboarding not completed, show onboarding wizard
                 if (repository.isUserLoggedIn() && !themeSettings.hasCompletedOnboarding) {
                     OnboardingScreen(
@@ -220,17 +246,17 @@ class MainActivity : ComponentActivity() {
                                         }
 
                                         composable(Screen.Schedule.route) {
-                                            val scheduleViewModel = remember { ScheduleViewModel(repository) }
+                                            val scheduleViewModel: ScheduleViewModel = viewModel { ScheduleViewModel(repository) }
                                             ScheduleScreen(viewModel = scheduleViewModel)
                                         }
 
                                         composable(Screen.Grades.route) {
-                                            val gradesViewModel = remember { GradesViewModel(repository) }
+                                            val gradesViewModel: GradesViewModel = viewModel { GradesViewModel(repository) }
                                             GradesScreen(viewModel = gradesViewModel)
                                         }
 
                                         composable(Screen.Homework.route) {
-                                            val homeworkViewModel = remember { HomeworkViewModel(repository) }
+                                            val homeworkViewModel: HomeworkViewModel = viewModel { HomeworkViewModel(repository) }
                                             HomeworkScreen(viewModel = homeworkViewModel)
                                         }
 
@@ -243,6 +269,7 @@ class MainActivity : ComponentActivity() {
                                                 repository = repository,
                                                 themeManager = app.themeManager,
                                                 onNavigate = onTabClick,
+                                                onSelectOrganization = { choosingOrganization = true },
                                                 onLogout = {
                                                     navController.navigate(Screen.Auth.route) {
                                                         popUpTo(0) { inclusive = true }
@@ -296,6 +323,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+                }
             }
         }
     }
@@ -312,6 +340,15 @@ class MainActivity : ComponentActivity() {
             "homework" -> Screen.Homework.route
             else -> null
         }
+    }
+}
+
+@Composable
+private fun PositionContent(context: org.youschool.app.domain.model.SchoolContext?, revision: Long, content: @Composable () -> Unit) {
+    key(context, revision) {
+        val owner = remember { object : ViewModelStoreOwner { override val viewModelStore = ViewModelStore() } }
+        DisposableEffect(owner) { onDispose { owner.viewModelStore.clear() } }
+        CompositionLocalProvider(LocalViewModelStoreOwner provides owner, content = content)
     }
 }
 

@@ -12,15 +12,19 @@ class GradesSyncWorker(appContext: Context, workerParams: WorkerParameters) : Co
     override suspend fun doWork(): Result {
         val app = applicationContext as YouSchoolApp
         val settings = app.themeManager.themeSettings.value
-        val userId = app.authManager.getUserId()
+        app.repository.initializePositions()
+        val school = app.repository.positionState.value.active ?: return Result.success()
+        if (inputData.getString("accountKey") != school.accountKey ||
+            inputData.getLong("positionId", -1) != school.positionId) return Result.success()
         if (!app.authManager.hasCredentials() || !settings.areNotificationsEnabled) return Result.success()
         return try {
             var failed = false
             if (settings.gradeNotificationsEnabled) failed = app.repository.syncGrades().isFailure
+            if (app.repository.positionState.value.active != school) return Result.success()
             if (settings.homeworkNotificationsEnabled) {
                 val now = ZonedDateTime.now()
                 val prefs = applicationContext.getSharedPreferences("youschool_notification_state", Context.MODE_PRIVATE)
-                val key = "homework_date_$userId"
+                val key = "homework_date_${school.key}"
                 if (NotificationRules.shouldRemind(now.toLocalDate(), now.toLocalTime(), settings.homeworkReminderMinute, prefs.getString(key, null))) {
                     // Refresh first: stale cache must not produce reminders for completed/removed homework.
                     if (app.repository.syncDayLessons(now.toInstant().toEpochMilli()).isFailure) {
@@ -28,7 +32,7 @@ class GradesSyncWorker(appContext: Context, workerParams: WorkerParameters) : Co
                     } else {
                         val current = app.themeManager.themeSettings.value
                         val after = ZonedDateTime.now()
-                        if (app.authManager.getUserId() == userId && current.areNotificationsEnabled && current.homeworkNotificationsEnabled &&
+                        if (app.repository.positionState.value.active == school && current.areNotificationsEnabled && current.homeworkNotificationsEnabled &&
                             after.toLocalDate() == now.toLocalDate() &&
                             NotificationRules.shouldRemind(after.toLocalDate(), after.toLocalTime(), current.homeworkReminderMinute, prefs.getString(key, null))) {
                             val lessons = app.repository.getLessonsForDay(now.toInstant().toEpochMilli()).first()

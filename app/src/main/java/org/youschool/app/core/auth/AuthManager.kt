@@ -7,6 +7,17 @@ import androidx.security.crypto.MasterKeys
 import java.security.MessageDigest
 
 class AuthManager(context: Context) {
+    private val positionPrefs = context.getSharedPreferences("youschool_positions", Context.MODE_PRIVATE)
+    fun accountKey(): String = sha256(getLogin().orEmpty().trim())
+    fun selectedPosition(): Long? = positionPrefs.getLong("selected_${accountKey()}", -1L).takeIf { it > 0 }
+    fun saveSelectedPosition(id: Long) { positionPrefs.edit().putLong("selected_${accountKey()}", id).commit() }
+    fun savedPositionState(): String? = positionPrefs.getString("state_${accountKey()}", null)
+    fun savePositionState(state: String) { positionPrefs.edit().putString("state_${accountKey()}", state).commit() }
+    fun saveOrganization(orgId: Long?, yearId: Long?) {
+        prefs.edit().putLong("org_id", orgId ?: -1L).putLong("org_year_id", yearId ?: -1L).commit()
+    }
+    fun getOrganizationYearId(): Long = prefs.getLong("org_year_id", -1L)
+
 
     private val prefs: SharedPreferences = try {
         val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)

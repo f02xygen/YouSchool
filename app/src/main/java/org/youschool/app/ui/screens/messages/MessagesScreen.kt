@@ -116,7 +116,7 @@ fun MessagesScreen(repository: SchoolRepository) {
                 if (allowed) {
                     Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.Bottom) {
                         OutlinedTextField(
-                            value = vm.drafts[thread.threadId].orEmpty(), onValueChange = { vm.drafts[thread.threadId] = it },
+                            value = vm.drafts[thread.threadId].orEmpty(), onValueChange = { vm.setDraft(thread.threadId, it) },
                             placeholder = { Text("Сообщение") }, maxLines = 5, enabled = !vm.sending,
                             modifier = Modifier.weight(1f)
                         )

@@ -1,11 +1,9 @@
 package org.youschool.app.core.database.entities
 
 import androidx.room.Entity
-import androidx.room.PrimaryKey
 
-@Entity(tableName = "lessons")
+@Entity(tableName = "lessons", primaryKeys = ["accountKey", "positionId", "id"])
 data class LessonEntity(
-    @PrimaryKey
     val id: Long,
     val dateMillis: Long,
     val numInDay: Int,
@@ -18,13 +16,14 @@ data class LessonEntity(
     val homeworkFilesJson: String,
     val gradeValue: String?,
     val gradeWeight: Int?,
-    val homeworkPartId: Long? = null
+    val homeworkPartId: Long? = null,
+    val accountKey: String = "",
+    val positionId: Long = -1L
 )
 
-@Entity(tableName = "grades")
+@Entity(tableName = "grades", primaryKeys = ["accountKey", "positionId", "id"])
 data class GradeEntity(
-    @PrimaryKey(autoGenerate = true)
-    val id: Long = 0,
+    val id: Long = java.util.UUID.randomUUID().mostSignificantBits,
     val lessonId: Long?,
     val unitId: Long?,
     val subject: String,
@@ -34,42 +33,48 @@ data class GradeEntity(
     val markDate: String,
     val lessonDate: String = "",
     val workType: String,
-    val teacherFio: String
+    val teacherFio: String,
+    val accountKey: String = "",
+    val positionId: Long = -1L
 )
 
-@Entity(tableName = "homework_status")
+@Entity(tableName = "homework_status", primaryKeys = ["accountKey", "positionId", "lessonId"])
 data class HomeworkStatusEntity(
-    @PrimaryKey
     val lessonId: Long,
     val isCompleted: Boolean,
-    val updatedTimestamp: Long = System.currentTimeMillis()
+    val updatedTimestamp: Long = System.currentTimeMillis(),
+    val accountKey: String = "",
+    val positionId: Long = -1L
 )
 
-@Entity(tableName = "read_grades")
+@Entity(tableName = "read_grades", primaryKeys = ["accountKey", "positionId", "markKey"])
 data class ReadGradeEntity(
-    @PrimaryKey
     val markKey: String,
-    val readTimestamp: Long = System.currentTimeMillis()
+    val readTimestamp: Long = System.currentTimeMillis(),
+    val accountKey: String = "",
+    val positionId: Long = -1L
 )
 
-@Entity(tableName = "pending_homework_sync")
+@Entity(tableName = "pending_homework_sync", primaryKeys = ["accountKey", "positionId", "partId"])
 data class PendingHomeworkSyncEntity(
-    @PrimaryKey
     val partId: Long,
     val lessonId: Long,
     val isCompleted: Boolean,
     val comment: String? = null,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val accountKey: String = "",
+    val positionId: Long = -1L
 )
 
-@Entity(tableName = "pending_homework_upload")
+@Entity(tableName = "pending_homework_upload", primaryKeys = ["accountKey", "positionId", "id"])
 data class PendingHomeworkUploadEntity(
-    @PrimaryKey(autoGenerate = true)
-    val id: Long = 0,
+    val id: Long = java.util.UUID.randomUUID().mostSignificantBits,
     val partId: Long,
     val localFilePath: String,
     val fileName: String,
     val fileSize: Long,
     val fileType: String? = null,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val accountKey: String = "",
+    val positionId: Long = -1L
 )

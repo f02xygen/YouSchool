@@ -15,6 +15,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.logging.HttpLoggingInterceptor
 import org.youschool.app.core.auth.AuthManager
 import org.youschool.app.core.network.dto.*
@@ -22,7 +23,13 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-class EschoolApiClient(private val authManager: AuthManager) {
+class EschoolApiClient(
+    private val authManager: AuthManager,
+    private val client: OkHttpClient = defaultClient()
+) {
+    var beforeSchoolRequest: (suspend () -> Result<Unit>)? = null
+    var onReauthenticated: (suspend (StateResponse) -> Result<Unit>)? = null
+
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -30,13 +37,13 @@ class EschoolApiClient(private val authManager: AuthManager) {
         coerceInputValues = true
     }
 
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .addInterceptor(HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
-        })
-        .build()
+    companion object {
+        private fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+            .build()
+    }
 
     private val chatClient = client.newBuilder().retryOnConnectionFailure(false).build()
 
@@ -53,8 +60,10 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 .url("$baseUrl/showRecaptcha?username=$username")
                 .get()
                 .build()
-            val response = client.newCall(request).execute()
+            val response = client.newCall(request).awaitResponse()
             response.body?.string()?.trim() == "true"
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             false
         }
@@ -83,7 +92,7 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 .header("Referer", "https://app.eschool.center/")
                 .build()
 
-            val response = client.newCall(request).execute()
+            val response = client.newCall(request).awaitResponse()
             val responseBody = response.body?.string() ?: ""
 
             if (!response.isSuccessful) {
@@ -119,6 +128,8 @@ class EschoolApiClient(private val authManager: AuthManager) {
             // Запрашиваем состояние пользователя
             val stateResult = getStateInternal(sessionId, route)
             stateResult
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -141,16 +152,52 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 .addHeader("Cookie", buildCookieHeader(sessionId, route))
                 .build()
 
-            val response = client.newCall(request).execute()
+            val response = client.newCall(request).awaitResponse()
             val body = response.body?.string() ?: return@withContext Result.failure(IOException("Пустой ответ профиля"))
+            if (!response.isSuccessful) return@withContext Result.failure(IOException("HTTP ${response.code}"))
             val state = json.decodeFromString<StateResponse>(body)
+            if (!state.authenticated) return@withContext Result.failure(IOException("401 Unauthorized"))
             Result.success(state)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
+    suspend fun getState(): Result<StateResponse> {
+        val session = authManager.getSessionId()
+        val result = if (session != null) getStateInternal(session, authManager.getRoute()) else Result.failure(IOException("401"))
+        return if (result.exceptionOrNull()?.message?.contains("401") == true) {
+            login(authManager.getLogin().orEmpty(), authManager.getPasswordHash().orEmpty())
+        } else result
+    }
+
+    suspend fun selectUser(positionUserId: Long): Result<StateResponse> = withContext(Dispatchers.IO) {
+        try {
+            suspend fun put(): Boolean {
+                val request = Request.Builder().url("$baseUrl/setUser/$positionUserId")
+                    .header("Cookie", buildCookieHeader(authManager.getSessionId().orEmpty(), authManager.getRoute()))
+                    .put(ByteArray(0).toRequestBody(null)).build()
+                client.newCall(request).awaitResponse().use { response ->
+                    if (response.code == 401) return false
+                    if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+                    return true
+                }
+            }
+            if (!put()) {
+                login(authManager.getLogin().orEmpty(), authManager.getPasswordHash().orEmpty()).getOrThrow()
+                if (!put()) throw IOException("401")
+            }
+            getStateInternal(authManager.getSessionId().orEmpty(), authManager.getRoute())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
     private suspend fun <T> executeWithAutoAuth(block: suspend (sessionId: String, route: String?) -> Result<T>): Result<T> = withContext(Dispatchers.IO) {
+        val confirmed = beforeSchoolRequest?.invoke()
+        if (confirmed?.isFailure == true) return@withContext Result.failure(confirmed.exceptionOrNull()!!)
         var sessionId = authManager.getSessionId()
         var route = authManager.getRoute()
 
@@ -162,6 +209,8 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 if (loginResult.isFailure) {
                     return@withContext Result.failure(loginResult.exceptionOrNull() ?: IOException("Ошибка входа"))
                 }
+                val restored = onReauthenticated?.invoke(loginResult.getOrThrow())
+                if (restored?.isFailure == true) return@withContext Result.failure(restored.exceptionOrNull()!!)
                 sessionId = authManager.getSessionId()
                 route = authManager.getRoute()
             } else {
@@ -177,6 +226,8 @@ class EschoolApiClient(private val authManager: AuthManager) {
             if (!login.isNullOrBlank() && !hash.isNullOrBlank()) {
                 val loginResult = login(login, hash)
                 if (loginResult.isSuccess) {
+                    val restored = onReauthenticated?.invoke(loginResult.getOrThrow())
+                    if (restored?.isFailure == true) return@withContext Result.failure(restored.exceptionOrNull()!!)
                     return@withContext block(authManager.getSessionId()!!, authManager.getRoute())
                 }
             }
@@ -197,7 +248,7 @@ class EschoolApiClient(private val authManager: AuthManager) {
             val request = Request.Builder().url(url)
                 .header("Cookie", buildCookieHeader(sessionId, route))
                 .method(method, body).build()
-            chatClient.newCall(request).execute().use { response ->
+            chatClient.newCall(request).awaitResponse().use { response ->
                 if (!response.isSuccessful) {
                     Result.failure(IOException("Ошибка сообщений: HTTP ${response.code}"))
                 } else {
@@ -273,11 +324,13 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     .addHeader("Cookie", buildCookieHeader(sessionId, route))
                     .build()
 
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).awaitResponse()
                 if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                 val body = response.body?.string() ?: ""
                 val diary = json.decodeFromString<DiaryResponse>(body)
                 Result.success(diary)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -293,11 +346,13 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     .addHeader("Cookie", buildCookieHeader(sessionId, route))
                     .build()
 
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).awaitResponse()
                 if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                 val body = response.body?.string() ?: ""
                 val grades = json.decodeFromString<GradesResponse>(body)
                 Result.success(grades)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -313,11 +368,13 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     .addHeader("Cookie", buildCookieHeader(sessionId, route))
                     .build()
 
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).awaitResponse()
                 if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                 val body = response.body?.string() ?: ""
                 val units = json.decodeFromString<UnitsResponse>(body)
                 Result.success(units)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -333,11 +390,13 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     .addHeader("Cookie", buildCookieHeader(sessionId, route))
                     .build()
 
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).awaitResponse()
                 if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                 val body = response.body?.string()?.trim() ?: ""
                 val periodId = body.toLongOrNull() ?: return@executeWithAutoAuth Result.failure(IOException("Некорректный ID периода: $body"))
                 Result.success(periodId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -353,11 +412,13 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     .addHeader("Cookie", buildCookieHeader(sessionId, route))
                     .build()
 
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).awaitResponse()
                 if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                 val body = response.body?.string() ?: ""
                 val periods = json.decodeFromString<List<PeriodContainerDto>>(body)
                 Result.success(periods)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -383,7 +444,7 @@ class EschoolApiClient(private val authManager: AuthManager) {
                         .addHeader("Cookie", buildCookieHeader(sessionId, route))
                         .build()
 
-                    val response = client.newCall(request).execute()
+                    val response = client.newCall(request).awaitResponse()
                     lastCode = response.code
                     if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                     if (response.isSuccessful) {
@@ -398,6 +459,8 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 }
 
                 Result.failure(IOException("Ошибка скачивания файла: HTTP $lastCode"))
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -426,13 +489,15 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     .addHeader("Cookie", buildCookieHeader(sessionId, route))
                     .build()
 
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).awaitResponse()
                 if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                 if (response.isSuccessful) {
                     Result.success(Unit)
                 } else {
                     Result.failure(IOException("Ошибка смены статуса ДЗ: HTTP ${response.code}"))
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -449,7 +514,7 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     .addHeader("Cookie", buildCookieHeader(sessionId, route))
                     .build()
 
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).awaitResponse()
                 if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                 val body = response.body?.string() ?: ""
                 val detailsResp = json.decodeFromString<HomeworkDetailsResponse>(body)
@@ -459,6 +524,8 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 } else {
                     Result.failure(IOException("Детали домашнего задания не найдены"))
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -484,7 +551,7 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     .addHeader("Cookie", buildCookieHeader(sessionId, route))
                     .build()
 
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).awaitResponse()
                 if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                 val body = response.body?.string() ?: ""
                 if (response.isSuccessful) {
@@ -493,6 +560,8 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 } else {
                     Result.failure(IOException("Ошибка загрузки файла: HTTP ${response.code} $body"))
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -511,7 +580,7 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     .addHeader("Cookie", buildCookieHeader(sessionId, route))
                     .build()
 
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).awaitResponse()
                 if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                 val body = response.body?.string()?.trim() ?: ""
                 val isSuccess = response.isSuccessful && (body == "true" || body == "")
@@ -520,9 +589,32 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 } else {
                     Result.failure(IOException("Ошибка удаления файла: HTTP ${response.code} $body"))
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
         }
     }
+}
+
+private suspend fun okhttp3.Call.awaitResponse(): okhttp3.Response = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+    continuation.invokeOnCancellation { cancel() }
+    enqueue(object : okhttp3.Callback {
+        override fun onFailure(call: okhttp3.Call, e: IOException) {
+            if (continuation.isActive) continuation.resumeWith(Result.failure(e))
+        }
+        override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+            try {
+                // Keep cancellation attached until the entire body has arrived, including downloads.
+                val buffered = response.use {
+                    val body = it.body
+                    it.newBuilder().body((body?.bytes() ?: ByteArray(0)).toResponseBody(body?.contentType())).build()
+                }
+                continuation.resume(buffered) { _, value, _ -> value.close() }
+            } catch (e: IOException) {
+                if (continuation.isActive) continuation.resumeWith(Result.failure(e))
+            }
+        }
+    })
 }

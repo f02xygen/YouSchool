@@ -15,6 +15,9 @@ object GradesNotificationScheduler {
             cancel(context)
             return
         }
+        val auth = org.youschool.app.core.auth.AuthManager(context)
+        val positionId = auth.selectedPosition() ?: return
+        if (!auth.hasCredentials()) return
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
@@ -24,11 +27,12 @@ object GradesNotificationScheduler {
             5, TimeUnit.MINUTES
         )
             .setConstraints(constraints)
+            .setInputData(workDataOf("accountKey" to auth.accountKey(), "positionId" to positionId))
             .build()
 
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
             UNIQUE_WORK_NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
+            ExistingPeriodicWorkPolicy.UPDATE,
             periodicWork
         )
     }

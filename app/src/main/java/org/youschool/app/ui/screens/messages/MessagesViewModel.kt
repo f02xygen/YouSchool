@@ -26,7 +26,14 @@ class MessagesViewModel(private val repository: SchoolRepository) : ViewModel() 
     var messageError by mutableStateOf<String?>(null); private set
     var recipientError by mutableStateOf<String?>(null); private set
     var noReplyId by mutableStateOf<Long?>(null); private set
-    val drafts = mutableStateMapOf<Long, String>()
+    private val schoolContext = repository.positionState.value.active
+    val drafts = mutableStateMapOf<Long, String>().apply {
+        schoolContext?.let { putAll(repository.getMessageDrafts(it)) }
+    }
+    fun setDraft(threadId: Long, text: String) {
+        drafts[threadId] = text
+        schoolContext?.let { repository.saveMessageDraft(it, threadId, text) }
+    }
     private val sendIds = mutableMapOf<Long, Pair<String, String>>()
     private var threadCursor: Long? = null
     private var messageCursor: Long? = null
@@ -151,7 +158,7 @@ class MessagesViewModel(private val repository: SchoolRepository) : ViewModel() 
         messageError = null
         viewModelScope.launch {
             repository.sendMessage(target.threadId, text, uid).fold({
-                if (drafts[target.threadId] == text) drafts.remove(target.threadId)
+                if (drafts[target.threadId] == text) { setDraft(target.threadId, ""); drafts.remove(target.threadId) }
                 sendIds.remove(target.threadId)
                 if (thread?.threadId == target.threadId) loadHistory()
             }, {

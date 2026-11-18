@@ -16,6 +16,12 @@ import java.io.File
 import java.io.IOException
 
 internal abstract class UnusedRepository : SchoolRepository {
+    override val positionState = kotlinx.coroutines.flow.MutableStateFlow(PositionState())
+    override suspend fun initializePositions() {}
+    override suspend fun switchPosition(positionUserId: Long): Result<Unit> = error("Unexpected repository call")
+    override fun getMessageDrafts(scope: SchoolContext): Map<Long, String> = emptyMap()
+    override fun saveMessageDraft(scope: SchoolContext, threadId: Long, text: String) {}
+
     override suspend fun getMessageThreads(before: Long?): Result<List<MessageThread>> = error("Unexpected repository call")
     override suspend fun getMessageThread(id: Long): Result<MessageThread> = error("Unexpected repository call")
     override suspend fun getMessages(id: Long, before: Long?): Result<List<SchoolMessage>> = error("Unexpected repository call")

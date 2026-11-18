@@ -11,6 +11,12 @@ import org.youschool.app.domain.model.SubjectAverage
 import org.youschool.app.domain.model.UserProfile
 
 interface SchoolRepository {
+    val positionState: kotlinx.coroutines.flow.StateFlow<PositionState>
+    suspend fun initializePositions()
+    suspend fun switchPosition(positionUserId: Long): Result<Unit>
+    fun getMessageDrafts(scope: SchoolContext): Map<Long, String>
+    fun saveMessageDraft(scope: SchoolContext, threadId: Long, text: String)
+
     suspend fun getMessageThreads(before: Long? = null): Result<List<MessageThread>>
     suspend fun getMessageThread(id: Long): Result<MessageThread>
     suspend fun getMessages(id: Long, before: Long? = null): Result<List<SchoolMessage>>

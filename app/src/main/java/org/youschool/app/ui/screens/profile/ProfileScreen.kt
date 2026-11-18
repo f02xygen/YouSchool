@@ -80,6 +80,7 @@ fun ProfileScreen(
     themeManager: ThemeManager,
     onLogout: () -> Unit,
     onNavigate: (String) -> Unit = {},
+    onSelectOrganization: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val profile = repository.getUserProfile()
@@ -268,6 +269,14 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+                ListItem(
+                    headlineContent = { Text("Организация и роль") },
+                    supportingContent = { Text("Ученик — ${profile?.schoolName.orEmpty()}") },
+                    leadingContent = { Icon(Icons.Rounded.School, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                    trailingContent = { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onSelectOrganization)
+                )
                 ProfileSettingsSection.entries.forEach { section ->
                     val summary = when (section) {
                         ProfileSettingsSection.APPEARANCE -> "${themeSettings.themeMode.title} · ${if (themeSettings.isDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "Адаптивная" else themeSettings.colorPalette.title}"
