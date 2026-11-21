@@ -2,12 +2,7 @@ package org.youschool.app.core.database.dao
 
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
-import org.youschool.app.core.database.entities.GradeEntity
-import org.youschool.app.core.database.entities.HomeworkStatusEntity
-import org.youschool.app.core.database.entities.LessonEntity
-import org.youschool.app.core.database.entities.PendingHomeworkSyncEntity
-import org.youschool.app.core.database.entities.PendingHomeworkUploadEntity
-import org.youschool.app.core.database.entities.ReadGradeEntity
+import org.youschool.app.core.database.entities.*
 
 @Dao
 interface LessonDao {
@@ -41,6 +36,9 @@ interface GradeDao {
     @Query("SELECT * FROM grades ORDER BY id DESC")
     fun getAllGrades(): Flow<List<GradeEntity>>
 
+    @Query("SELECT * FROM grades WHERE periodId = :periodId ORDER BY id DESC")
+    fun getGradesForPeriod(periodId: Long): Flow<List<GradeEntity>>
+
     @Query("SELECT * FROM grades")
     suspend fun getAllGradesSnapshot(): List<GradeEntity>
 
@@ -53,10 +51,67 @@ interface GradeDao {
     @Query("DELETE FROM grades")
     suspend fun clearAllGrades()
 
+    @Query("DELETE FROM grades WHERE periodId = :periodId")
+    suspend fun deleteGradesForPeriod(periodId: Long)
+
     @Transaction
     suspend fun replaceAllGrades(grades: List<GradeEntity>) {
         clearAllGrades()
         insertGrades(grades)
+    }
+
+    @Transaction
+    suspend fun replaceGradesForPeriod(periodId: Long, grades: List<GradeEntity>) {
+        deleteGradesForPeriod(periodId)
+        insertGrades(grades)
+    }
+}
+
+@Dao
+interface PeriodDao {
+    @Query("SELECT * FROM periods ORDER BY CASE WHEN typeCode = 'Y' THEN 999 ELSE num END ASC, id ASC")
+    fun getAllPeriods(): Flow<List<PeriodEntity>>
+
+    @Query("SELECT * FROM periods WHERE isDefault = 1 LIMIT 1")
+    fun getDefaultPeriod(): Flow<PeriodEntity?>
+
+    @Query("SELECT * FROM periods WHERE isDefault = 1 LIMIT 1")
+    suspend fun getDefaultPeriodSnapshot(): PeriodEntity?
+
+    @Query("SELECT * FROM periods WHERE id = :id LIMIT 1")
+    suspend fun getPeriodById(id: Long): PeriodEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPeriods(periods: List<PeriodEntity>)
+
+    @Query("DELETE FROM periods")
+    suspend fun clearAllPeriods()
+
+    @Transaction
+    suspend fun replaceAllPeriods(periods: List<PeriodEntity>) {
+        clearAllPeriods()
+        insertPeriods(periods)
+    }
+}
+
+@Dao
+interface PeriodUnitDao {
+    @Query("SELECT * FROM period_units WHERE periodId = :periodId ORDER BY unitName ASC")
+    fun getUnitsForPeriod(periodId: Long): Flow<List<PeriodUnitEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertUnits(units: List<PeriodUnitEntity>)
+
+    @Query("DELETE FROM period_units WHERE periodId = :periodId")
+    suspend fun deleteUnitsForPeriod(periodId: Long)
+
+    @Query("DELETE FROM period_units")
+    suspend fun clearAllUnits()
+
+    @Transaction
+    suspend fun replaceUnitsForPeriod(periodId: Long, units: List<PeriodUnitEntity>) {
+        deleteUnitsForPeriod(periodId)
+        insertUnits(units)
     }
 }
 

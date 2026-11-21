@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.youschool.app.core.notification.NotificationHelper
@@ -12,6 +13,7 @@ import org.youschool.app.core.notification.NotificationRules
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -24,9 +26,12 @@ import org.youschool.app.core.database.entities.HomeworkStatusEntity
 import org.youschool.app.core.database.entities.LessonEntity
 import org.youschool.app.core.database.entities.PendingHomeworkSyncEntity
 import org.youschool.app.core.database.entities.PendingHomeworkUploadEntity
+import org.youschool.app.core.database.entities.PeriodEntity
+import org.youschool.app.core.database.entities.PeriodUnitEntity
 import org.youschool.app.core.database.entities.ReadGradeEntity
 import org.youschool.app.core.network.EschoolApiClient
 import org.youschool.app.core.network.dto.FileDto
+import org.youschool.app.core.network.dto.PeriodItemDto
 import org.youschool.app.domain.model.*
 import org.youschool.app.domain.repository.SchoolRepository
 import java.io.File
@@ -72,7 +77,9 @@ class SchoolRepositoryImpl(
             val statusMap = statuses.associateBy { it.lessonId }
             val gradesByLesson = grades.groupBy { it.lessonId }
             entities.map { entity ->
-                val lessonGrades = (gradesByLesson[entity.id] ?: emptyList()).map { it.toDomain() }
+                val lessonGrades = (gradesByLesson[entity.id] ?: emptyList())
+                    .distinctBy { "${it.lessonId}_${it.markDate}_${it.markVal}" }
+                    .map { it.toDomain() }
                 entity.toDomain(
                     isDone = statusMap[entity.id]?.isCompleted ?: false,
                     lessonGrades = lessonGrades
@@ -111,8 +118,16 @@ class SchoolRepositoryImpl(
 
     private val isoDateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     override fun getNewGrades(): Flow<List<Grade>> {
-        val gradesFlow = database.gradeDao().getAllGrades()
+        val defaultPeriodFlow = database.periodDao().getDefaultPeriod()
+        val gradesFlow = defaultPeriodFlow.flatMapLatest { def ->
+            if (def != null && def.id > 0) {
+                database.gradeDao().getGradesForPeriod(def.id)
+            } else {
+                database.gradeDao().getAllGrades()
+            }
+        }
         val readFlow = database.readGradeDao().getAllReadGrades()
         val prefs = context.getSharedPreferences("youschool_prefs", Context.MODE_PRIVATE)
 
@@ -147,8 +162,28 @@ class SchoolRepositoryImpl(
         }
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     override fun getAllGrades(): Flow<List<Grade>> {
-        val gradesFlow = database.gradeDao().getAllGrades()
+        val defaultPeriodFlow = database.periodDao().getDefaultPeriod()
+        return defaultPeriodFlow.flatMapLatest { def ->
+            if (def != null && def.id > 0) {
+                getGradesForPeriod(def.id)
+            } else {
+                val gradesFlow = database.gradeDao().getAllGrades()
+                val readFlow = database.readGradeDao().getAllReadGrades()
+                combine(gradesFlow, readFlow) { grades, readEntities ->
+                    val readKeySet = readEntities.map { it.markKey }.toSet()
+                    grades.map { entity ->
+                        val key = "${entity.lessonId ?: 0}_${entity.markDate}_${entity.markVal}"
+                        entity.toDomain(isRead = readKeySet.contains(key))
+                    }
+                }
+            }
+        }
+    }
+
+    override fun getGradesForPeriod(periodId: Long): Flow<List<Grade>> {
+        val gradesFlow = database.gradeDao().getGradesForPeriod(periodId)
         val readFlow = database.readGradeDao().getAllReadGrades()
 
         return combine(gradesFlow, readFlow) { grades, readEntities ->
@@ -160,27 +195,62 @@ class SchoolRepositoryImpl(
         }
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     override fun getSubjectAverages(): Flow<List<SubjectAverage>> {
-        return database.gradeDao().getAllGrades().map { entities ->
-            val grouped = entities.groupBy { it.subject }
-            grouped.map { (subject, grades) ->
-                val evaluableGrades = grades.filter { it.markNum > 0 }
-                var totalWeightedScore = 0.0
-                var totalWeight = 0.0
-                for (g in evaluableGrades) {
-                    totalWeightedScore += g.markNum * g.weight
-                    totalWeight += g.weight
+        val defaultPeriodFlow = database.periodDao().getDefaultPeriod()
+        return defaultPeriodFlow.flatMapLatest { def ->
+            if (def != null && def.id > 0) {
+                getSubjectAveragesForPeriod(def.id)
+            } else {
+                database.gradeDao().getAllGrades().map { entities ->
+                    computeAveragesFromEntities(entities, emptyMap())
                 }
-                val avg = if (totalWeight > 0) totalWeightedScore / totalWeight else 0.0
-
-                SubjectAverage(
-                    subjectName = subject,
-                    averageScore = avg,
-                    gradesCount = evaluableGrades.size,
-                    totalWeight = totalWeight
-                )
-            }.sortedBy { it.subjectName }
+            }
         }
+    }
+
+    override fun getSubjectAveragesForPeriod(periodId: Long): Flow<List<SubjectAverage>> {
+        val gradesFlow = database.gradeDao().getGradesForPeriod(periodId)
+        val unitsFlow = database.periodUnitDao().getUnitsForPeriod(periodId)
+
+        return combine(gradesFlow, unitsFlow) { entities, units ->
+            val finalMarksBySubject = units.associate { it.unitName to it.totalMark }
+            computeAveragesFromEntities(entities, finalMarksBySubject)
+        }
+    }
+
+    override fun getPeriods(): Flow<List<AcademicPeriod>> {
+        return database.periodDao().getAllPeriods().map { entities ->
+            entities.map { it.toDomain() }
+        }
+    }
+
+    private fun computeAveragesFromEntities(
+        entities: List<GradeEntity>,
+        finalMarksBySubject: Map<String, String?>
+    ): List<SubjectAverage> {
+        val grouped = entities.groupBy { it.subject }
+        val allSubjects = (grouped.keys + finalMarksBySubject.keys).distinct().filter { it.isNotBlank() }
+
+        return allSubjects.map { subject ->
+            val grades = grouped[subject] ?: emptyList()
+            val evaluableGrades = grades.filter { it.markNum > 0 }
+            var totalWeightedScore = 0.0
+            var totalWeight = 0.0
+            for (g in evaluableGrades) {
+                totalWeightedScore += g.markNum * g.weight
+                totalWeight += g.weight
+            }
+            val avg = if (totalWeight > 0) totalWeightedScore / totalWeight else 0.0
+
+            SubjectAverage(
+                subjectName = subject,
+                averageScore = avg,
+                gradesCount = evaluableGrades.size,
+                totalWeight = totalWeight,
+                finalMark = finalMarksBySubject[subject]?.takeIf { it.isNotBlank() }
+            )
+        }.sortedBy { it.subjectName }
     }
 
     override suspend fun syncDayLessons(dateMillis: Long): Result<Unit> = withContext(Dispatchers.IO) {
@@ -268,20 +338,94 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override suspend fun syncGrades(): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun syncPeriods(): Result<List<AcademicPeriod>> = withContext(Dispatchers.IO) {
+        val userId = authManager.getUserId()
+        if (userId <= 0) return@withContext Result.failure(Exception("Пользователь не авторизован"))
+
+        try {
+            val defaultPeriodResult = apiClient.getDefaultPeriodId(userId)
+            val defaultPeriodId = defaultPeriodResult.getOrElse { -1L }
+
+            val cal = Calendar.getInstance()
+            val currentYear = cal.get(Calendar.YEAR)
+            val month = cal.get(Calendar.MONTH)
+            val academicYear = if (month >= Calendar.SEPTEMBER) currentYear else currentYear - 1
+
+            var itemsResult = apiClient.getAcademicPeriodItems(academicYear)
+            var items = itemsResult.getOrNull() ?: emptyList()
+
+            if (defaultPeriodId > 0 && items.none { it.id == defaultPeriodId }) {
+                val altItems = apiClient.getAcademicPeriodItems(academicYear + 1).getOrNull() ?: emptyList()
+                if (altItems.any { it.id == defaultPeriodId }) {
+                    items = altItems
+                }
+            }
+
+            val periodEntities = normalizeAndSortPeriods(items, defaultPeriodId)
+
+            if (periodEntities.isNotEmpty()) {
+                database.periodDao().replaceAllPeriods(periodEntities)
+                Result.success(periodEntities.map { it.toDomain() })
+            } else if (defaultPeriodId > 0) {
+                val fallback = PeriodEntity(
+                    id = defaultPeriodId,
+                    name = "Текущий период",
+                    shortName = "Текущий",
+                    typeCode = "Q",
+                    num = 1,
+                    dateStart = 0L,
+                    dateEnd = 0L,
+                    isDefault = true
+                )
+                database.periodDao().replaceAllPeriods(listOf(fallback))
+                Result.success(listOf(fallback.toDomain()))
+            } else {
+                Result.failure(Exception("Не удалось получить учебные периоды"))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun syncGrades(periodId: Long?): Result<Unit> = withContext(Dispatchers.IO) {
         syncMutex.withLock {
             val userId = authManager.getUserId()
             if (userId <= 0) return@withContext Result.failure(Exception("Пользователь не авторизован"))
 
             try {
-                val defaultPeriodResult = apiClient.getDefaultPeriodId(userId)
-                val currentPeriodId = defaultPeriodResult.getOrElse { return@withContext Result.failure(it) }
+                var cachedDefault = database.periodDao().getDefaultPeriodSnapshot()
+                if (cachedDefault == null) {
+                    syncPeriods()
+                    cachedDefault = database.periodDao().getDefaultPeriodSnapshot()
+                }
 
-                // Fetch units to get accurate subject names
-                val unitsResult = apiClient.getDiaryUnits(userId, currentPeriodId)
-                val unitNames = unitsResult.getOrNull()?.result?.associate { (it.unitId ?: 0L) to (it.unitName ?: "") } ?: emptyMap()
+                val defaultPeriodId = cachedDefault?.id ?: apiClient.getDefaultPeriodId(userId).getOrElse { return@withContext Result.failure(it) }
+                val targetPeriodId = periodId ?: defaultPeriodId
+                val isDefaultPeriod = (targetPeriodId == defaultPeriodId)
 
-                val gradesResult = apiClient.getGradesForPeriod(userId, currentPeriodId)
+                // Fetch units to get accurate subject names and totalMarks
+                val unitsResult = apiClient.getDiaryUnits(userId, targetPeriodId)
+                val unitDtos = unitsResult.getOrNull()?.result ?: emptyList()
+                val unitNames = unitDtos.associate { (it.unitId ?: 0L) to (it.unitName ?: "") }
+
+                val unitEntities = unitDtos.mapNotNull { dto ->
+                    val uId = dto.unitId ?: return@mapNotNull null
+                    val uName = dto.unitName ?: return@mapNotNull null
+                    PeriodUnitEntity(
+                        periodId = targetPeriodId,
+                        unitId = uId,
+                        unitName = uName,
+                        totalMark = dto.totalMark?.trim()?.takeIf { it.isNotEmpty() },
+                        overMark = dto.overMark
+                    )
+                }
+                if (unitEntities.isNotEmpty()) {
+                    database.periodUnitDao().replaceUnitsForPeriod(targetPeriodId, unitEntities)
+                }
+
+                val gradesResult = apiClient.getGradesForPeriod(userId, targetPeriodId)
                 if (gradesResult.isSuccess) {
                     val gradesDto = gradesResult.getOrNull()?.result ?: emptyList()
                     val entities = gradesDto.filter { !it.markVal.isNullOrBlank() }.map { dto ->
@@ -298,49 +442,55 @@ class SchoolRepositoryImpl(
                             markDate = dto.markDate ?: "",
                             lessonDate = dto.startDt ?: "",
                             workType = dto.lptName ?: "",
-                            teacherFio = dto.teachFio ?: ""
+                            teacherFio = dto.teachFio ?: "",
+                            periodId = targetPeriodId
                         )
                     }
-                    val prefs = context.getSharedPreferences("youschool_prefs", Context.MODE_PRIVATE)
-                    if (authManager.getUserId() != userId) return@withContext Result.failure(Exception("Аккаунт изменился"))
-                    val initializedKey = "initialized_grades_v2_$userId"
-                    val notificationPrefs = context.getSharedPreferences("youschool_notification_state", Context.MODE_PRIVATE)
-                    val seenKey = "grades_${userId}_$currentPeriodId"
-                    val keys = entities.associateBy { "${it.unitId}_${it.lessonId}_${it.markDate}_${it.markVal}_${it.workType}" }
-                    val seen = notificationPrefs.getStringSet(seenKey, null)?.toSet()
-                    val isFirstGradesSync = !prefs.getBoolean(initializedKey, false) || seen == null
-                    val newKeys = NotificationRules.newKeys(keys.keys, seen)
 
-                    if (isFirstGradesSync) {
-                        // On first launch / initial sync, mark all existing past grades as already read
-                        // so that only genuinely new grades added in subsequent syncs will be shown in "Новые оценки"
-                        val readEntities = entities.map { entity ->
-                            val key = "${entity.lessonId ?: 0}_${entity.markDate}_${entity.markVal}"
-                            ReadGradeEntity(key)
+                    if (isDefaultPeriod) {
+                        val prefs = context.getSharedPreferences("youschool_prefs", Context.MODE_PRIVATE)
+                        if (authManager.getUserId() != userId) return@withContext Result.failure(Exception("Аккаунт изменился"))
+                        val initializedKey = "initialized_grades_v2_$userId"
+                        val notificationPrefs = context.getSharedPreferences("youschool_notification_state", Context.MODE_PRIVATE)
+                        val seenKey = "grades_${userId}_$targetPeriodId"
+                        val keys = entities.associateBy { "${it.unitId}_${it.lessonId}_${it.markDate}_${it.markVal}_${it.workType}" }
+                        val seen = notificationPrefs.getStringSet(seenKey, null)?.toSet()
+                        val isFirstGradesSync = !prefs.getBoolean(initializedKey, false) || seen == null
+                        val newKeys = NotificationRules.newKeys(keys.keys, seen)
+
+                        if (isFirstGradesSync) {
+                            val readEntities = entities.map { entity ->
+                                val key = "${entity.lessonId ?: 0}_${entity.markDate}_${entity.markVal}"
+                                ReadGradeEntity(key)
+                            }
+                            database.readGradeDao().markAsRead(readEntities)
+                            prefs.edit().putBoolean(initializedKey, true).apply()
+                        } else if (newKeys.isNotEmpty()) {
+                            val nonNewEntities = entities.filter { entity ->
+                                val key = "${entity.unitId}_${entity.lessonId}_${entity.markDate}_${entity.markVal}_${entity.workType}"
+                                !newKeys.contains(key)
+                            }.map { entity ->
+                                val key = "${entity.lessonId ?: 0}_${entity.markDate}_${entity.markVal}"
+                                ReadGradeEntity(key)
+                            }
+                            if (nonNewEntities.isNotEmpty()) {
+                                database.readGradeDao().markAsRead(nonNewEntities)
+                            }
                         }
-                        database.readGradeDao().markAsRead(readEntities)
-                        prefs.edit().putBoolean(initializedKey, true).apply()
-                    } else if (newKeys.isNotEmpty()) {
-                        // In subsequent syncs, guarantee all previous (non-new) grades are marked as read
-                        val nonNewEntities = entities.filter { entity ->
-                            val key = "${entity.unitId}_${entity.lessonId}_${entity.markDate}_${entity.markVal}_${entity.workType}"
-                            !newKeys.contains(key)
-                        }.map { entity ->
-                            val key = "${entity.lessonId ?: 0}_${entity.markDate}_${entity.markVal}"
-                            ReadGradeEntity(key)
+
+                        database.gradeDao().deleteGradesForPeriod(0L)
+                        database.gradeDao().replaceGradesForPeriod(targetPeriodId, entities)
+
+                        notificationPrefs.edit().putStringSet(seenKey, (seen.orEmpty() + keys.keys).toSet()).apply()
+                        val settings = (context.applicationContext as org.youschool.app.YouSchoolApp).themeManager.themeSettings.value
+                        if (settings.areNotificationsEnabled && settings.gradeNotificationsEnabled && newKeys.isNotEmpty()) {
+                            NotificationHelper.showNewGradesNotification(context, newKeys.mapNotNull { keys[it] })
                         }
-                        if (nonNewEntities.isNotEmpty()) {
-                            database.readGradeDao().markAsRead(nonNewEntities)
-                        }
+                    } else {
+                        // Non-default period
+                        database.gradeDao().replaceGradesForPeriod(targetPeriodId, entities)
                     }
 
-                    database.gradeDao().replaceAllGrades(entities)
-
-                    notificationPrefs.edit().putStringSet(seenKey, (seen.orEmpty() + keys.keys).toSet()).apply()
-                    val settings = (context.applicationContext as org.youschool.app.YouSchoolApp).themeManager.themeSettings.value
-                    if (settings.areNotificationsEnabled && settings.gradeNotificationsEnabled && newKeys.isNotEmpty()) {
-                        NotificationHelper.showNewGradesNotification(context, newKeys.mapNotNull { keys[it] })
-                    }
                     Result.success(Unit)
                 } else {
                     Result.failure(gradesResult.exceptionOrNull() ?: Exception("Ошибка загрузки оценок"))
@@ -352,6 +502,117 @@ class SchoolRepositoryImpl(
             }
         }
     }
+
+    companion object {
+        fun normalizeAndSortPeriods(items: List<PeriodItemDto>, defaultPeriodId: Long): List<PeriodEntity> {
+            if (items.isEmpty()) return emptyList()
+
+            val now = System.currentTimeMillis()
+
+            fun isYear(item: PeriodItemDto): Boolean {
+                val tc = item.typeCode.uppercase()
+                val lower = item.name.lowercase()
+                return tc == "Y" || (lower.contains("год") && !lower.contains("полугод"))
+            }
+
+            fun isStudy(item: PeriodItemDto): Boolean {
+                val tc = item.typeCode.uppercase()
+                val lower = item.name.lowercase()
+                return (tc in listOf("Q", "HY", "T") || lower.contains("четверт") || lower.contains("полугод") || lower.contains("триместр")) && !isYear(item)
+            }
+
+            // 1. Separate study periods (quarters, half-years, trimesters) from Year
+            val studyItems = items.filter { isStudy(it) }
+            val yearItems = items.filter { isYear(it) }
+
+            // 2. Identify the student's native study typeCode ("HY" for 10-11 grade, "Q" for 1-9 grade, or "T")
+            val nativeTypeCode = items.find { it.id == defaultPeriodId && isStudy(it) }?.typeCode?.uppercase()
+                ?: studyItems.firstOrNull { it.date1 > 0 && it.date2 > 0 && now in it.date1..it.date2 }?.typeCode?.uppercase()
+                ?: studyItems.firstOrNull { it.date1 > 0 && it.date1 <= now }?.typeCode?.uppercase()
+                ?: studyItems.firstOrNull()?.typeCode?.uppercase()
+                ?: "Q"
+
+            // 3. Filter study items strictly to the native type
+            val nativeItems = studyItems.filter { it.typeCode.uppercase() == nativeTypeCode }
+
+            // 4. Determine the currently active study period:
+            // - If defaultPeriodId points to a native study period, use it.
+            // - Otherwise, find the native study period where now is in date1..date2.
+            // - Fallback to latest native period where date1 <= now, or first native period.
+            // NEVER let Year be the active study period while classes are in progress!
+            val activeStudyItem = nativeItems.find { it.id == defaultPeriodId }
+                ?: nativeItems.firstOrNull { it.date1 > 0 && it.date2 > 0 && now in it.date1..it.date2 }
+                ?: nativeItems.filter { it.date1 > 0 && it.date1 <= now }.maxByOrNull { it.date1 }
+                ?: nativeItems.firstOrNull()
+
+            val activePeriodNum = activeStudyItem?.num ?: 1
+            val effectiveDefaultId = activeStudyItem?.id ?: defaultPeriodId
+
+            // 5. Deduplicate native periods by `num` so that NO quarter or half-year ever appears twice!
+            // Only keep periods up to the current active period (no future empty periods).
+            val uniqueNativeByNum = nativeItems
+                .filter { it.num <= activePeriodNum }
+                .groupBy { it.num }
+                .values
+                .map { list ->
+                    list.firstOrNull { it.id == effectiveDefaultId }
+                        ?: list.firstOrNull { it.date1 > 0 && it.date2 > 0 }
+                        ?: list.first()
+                }
+                .sortedBy { it.num }
+
+            // 6. Deduplicate Year item: pick at most ONE year item
+            val singleYearItem = yearItems.let { list ->
+                list.firstOrNull { it.id == defaultPeriodId }
+                    ?: list.firstOrNull { it.date1 > 0 && it.date2 > 0 }
+                    ?: list.firstOrNull()
+            }
+
+            // 7. Assemble final list: native periods in chronological order first, Year ALWAYS at the end!
+            val finalItems = if (uniqueNativeByNum.isNotEmpty()) {
+                uniqueNativeByNum + listOfNotNull(singleYearItem)
+            } else {
+                items.distinctBy { it.name }.take(4)
+            }
+
+            fun makeShortName(item: PeriodItemDto): String {
+                val tc = item.typeCode.uppercase()
+                val lowerName = item.name.lowercase()
+                return when {
+                    tc == "Q" || lowerName.contains("четверт") -> "${item.num} четв."
+                    tc == "T" || lowerName.contains("триместр") -> "${item.num} трим."
+                    tc == "HY" || lowerName.contains("полугод") -> "${item.num} полуг."
+                    isYear(item) -> "Год"
+                    item.name.length <= 10 -> item.name
+                    else -> item.name.substringBefore(" ")
+                }
+            }
+
+            return finalItems.map { item ->
+                PeriodEntity(
+                    id = item.id,
+                    name = item.name,
+                    shortName = makeShortName(item),
+                    typeCode = item.typeCode.ifBlank { "Q" },
+                    num = item.num,
+                    dateStart = item.date1,
+                    dateEnd = item.date2,
+                    isDefault = (item.id == effectiveDefaultId)
+                )
+            }
+        }
+    }
+
+    private fun PeriodEntity.toDomain() = AcademicPeriod(
+        id = id,
+        name = name,
+        shortName = shortName,
+        typeCode = typeCode,
+        num = num,
+        dateStart = dateStart,
+        dateEnd = dateEnd,
+        isDefault = isDefault
+    )
 
     private fun isNetworkAvailable(): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
@@ -575,6 +836,12 @@ class SchoolRepositoryImpl(
             .remove("initialized_grades_$userId")
             .remove("initialized_grades_v2_$userId")
             .apply()
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            try {
+                database.periodDao().clearAllPeriods()
+                database.periodUnitDao().clearAllUnits()
+            } catch (_: Exception) {}
+        }
     }
 
     override suspend fun markGradeAsRead(markKey: String) {

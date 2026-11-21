@@ -34,7 +34,33 @@ data class GradeEntity(
     val markDate: String,
     val lessonDate: String = "",
     val workType: String,
-    val teacherFio: String
+    val teacherFio: String,
+    val periodId: Long = 0L
+)
+
+@Entity(tableName = "periods")
+data class PeriodEntity(
+    @PrimaryKey
+    val id: Long,
+    val name: String,
+    val shortName: String,
+    val typeCode: String,
+    val num: Int,
+    val dateStart: Long,
+    val dateEnd: Long,
+    val isDefault: Boolean = false
+)
+
+@Entity(
+    tableName = "period_units",
+    primaryKeys = ["periodId", "unitId"]
+)
+data class PeriodUnitEntity(
+    val periodId: Long,
+    val unitId: Long,
+    val unitName: String,
+    val totalMark: String? = null,
+    val overMark: Double? = null
 )
 
 @Entity(tableName = "homework_status")

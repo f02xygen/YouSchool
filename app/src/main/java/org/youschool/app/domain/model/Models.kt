@@ -42,14 +42,27 @@ data class Grade(
     val typeName: String,
     val teacherName: String,
     val markKey: String = "$lessonId-$date-$value",
-    val isRead: Boolean = false
+    val isRead: Boolean = false,
+    val periodId: Long = 0L
 )
 
 data class SubjectAverage(
     val subjectName: String,
     val averageScore: Double,
     val gradesCount: Int,
-    val totalWeight: Double = 0.0
+    val totalWeight: Double = 0.0,
+    val finalMark: String? = null
+)
+
+data class AcademicPeriod(
+    val id: Long,
+    val name: String,
+    val shortName: String,
+    val typeCode: String,
+    val num: Int,
+    val dateStart: Long,
+    val dateEnd: Long,
+    val isDefault: Boolean = false
 )
 
 data class SimulatedGrade(

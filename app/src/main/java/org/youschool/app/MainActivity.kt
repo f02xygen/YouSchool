@@ -261,6 +261,7 @@ class MainActivity : ComponentActivity() {
                                 currentRoute = currentRoute,
                                 screens = bottomScreens,
                                 bottomOffsetDp = themeSettings.navBarBottomOffsetDp,
+                                dragHapticEnabled = themeSettings.isNavBarDragHapticEnabled,
                                 onNavigate = onTabClick,
                                 modifier = Modifier.align(Alignment.BottomCenter)
                             )
@@ -320,6 +321,7 @@ fun FloatingPillNavigationBar(
     currentRoute: String?,
     screens: List<Screen> = Screen.bottomNavScreens,
     bottomOffsetDp: Int = 16,
+    dragHapticEnabled: Boolean = true,
     onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -400,7 +402,7 @@ fun FloatingPillNavigationBar(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(32.dp))
                 .onSizeChanged { pillWidthPx = it.width.toFloat() }
-                .pointerInput(currentRoute, pillWidthPx, screens) {
+                .pointerInput(currentRoute, pillWidthPx, screens, dragHapticEnabled) {
                     if (pillWidthPx <= 0f || tabCount <= 0 || capsuleWidthPx <= 0f) return@pointerInput
                     val touchSlop = viewConfiguration.touchSlop
                     awaitEachGesture {
@@ -430,6 +432,19 @@ fun FloatingPillNavigationBar(
                                 if (abs(dx) > threshold) {
                                     draggingActive = true
                                     isDragging = true
+                                    val startTargetLeft = org.youschool.app.ui.navigation.BottomBarConfig.calculatePillTargetLeft(
+                                        isDownOnActivePill = isDownOnActivePill,
+                                        initialPillLeft = initialPillLeft,
+                                        pointerX = pointer.position.x,
+                                        startX = startX,
+                                        paddingPx = paddingPx,
+                                        capsuleWidthPx = capsuleWidthPx,
+                                        innerWidthPx = innerWidthPx
+                                    )
+                                    lastHoveredIndex = org.youschool.app.ui.navigation.BottomBarConfig.nearestTabIndex(
+                                        startTargetLeft, capsuleWidthPx, tabCount
+                                    )
+                                    hoveredTabIndex = lastHoveredIndex
                                 }
                             }
 
@@ -452,6 +467,9 @@ fun FloatingPillNavigationBar(
                                 if (currentHoveredIndex != lastHoveredIndex) {
                                     lastHoveredIndex = currentHoveredIndex
                                     hoveredTabIndex = currentHoveredIndex
+                                    if (dragHapticEnabled) {
+                                        haptic.tick()
+                                    }
                                 }
                             }
                         }

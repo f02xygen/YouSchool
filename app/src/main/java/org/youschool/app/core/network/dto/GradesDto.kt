@@ -48,10 +48,11 @@ data class PeriodContainerDto(
 
 @Serializable
 data class PeriodItemDto(
-    val id: Long,
-    val name: String,
-    val date1: Long,
-    val date2: Long,
-    val typeCode: String,
-    val num: Int = 1
+    val id: Long = 0L,
+    val name: String = "",
+    val date1: Long = 0L,
+    val date2: Long = 0L,
+    val typeCode: String = "",
+    val num: Int = 1,
+    val items: List<PeriodItemDto> = emptyList()
 )

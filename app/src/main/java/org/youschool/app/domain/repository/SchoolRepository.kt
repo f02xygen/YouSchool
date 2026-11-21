@@ -26,6 +26,9 @@ interface SchoolRepository {
     fun getAllGrades(): Flow<List<Grade>>
     fun getNewGrades(): Flow<List<Grade>>
     fun getSubjectAverages(): Flow<List<SubjectAverage>>
+    fun getPeriods(): Flow<List<AcademicPeriod>>
+    fun getGradesForPeriod(periodId: Long): Flow<List<Grade>>
+    fun getSubjectAveragesForPeriod(periodId: Long): Flow<List<SubjectAverage>>
     
     suspend fun markGradeAsRead(markKey: String)
     suspend fun markAllGradesAsRead()
@@ -34,7 +37,8 @@ interface SchoolRepository {
     suspend fun downloadHomeworkFile(fileId: Long, fileName: String, variantId: Long? = null): Result<File>
 
     suspend fun syncDayLessons(dateMillis: Long): Result<Unit>
-    suspend fun syncGrades(): Result<Unit>
+    suspend fun syncPeriods(): Result<List<AcademicPeriod>>
+    suspend fun syncGrades(periodId: Long? = null): Result<Unit>
     suspend fun toggleHomeworkStatus(lessonId: Long, isDone: Boolean, comment: String? = null)
     suspend fun syncPendingHomeworkStatus(): Result<Unit>
     suspend fun enqueueHomeworkResultUpload(partId: Long, file: File): Result<PendingHomeworkUploadEntity>

@@ -216,4 +216,189 @@ class CalculationUnitTest {
         assertEquals("0.3", org.youschool.app.ui.screens.grades.formatGradeWeight(0.30000000000000004))
         assertEquals("1.25", org.youschool.app.ui.screens.grades.formatGradeWeight(1.2500000000000002))
     }
+
+    @Test
+    fun testParsePeriodsJsonFlatAndNested() {
+        // Flat array of periods
+        val flatJson = """
+            [
+                {"id": 101, "name": "1 четверть", "typeCode": "Q", "num": 1, "date1": 1725148800000, "date2": 1729814400000},
+                {"id": 102, "name": "2 четверть", "typeCode": "Q", "num": 2, "date1": 1730678400000, "date2": 1735516800000}
+            ]
+        """.trimIndent()
+        val flatItems = org.youschool.app.core.network.EschoolApiClient.parsePeriodsJson(flatJson)
+        assertEquals(2, flatItems.size)
+        assertEquals(101L, flatItems[0].id)
+        assertEquals("1 четверть", flatItems[0].name)
+        assertEquals("Q", flatItems[0].typeCode)
+        assertEquals(1, flatItems[0].num)
+
+        // Nested tree structure (e.g. year -> half-years -> quarters)
+        val nestedJson = """
+            {
+                "result": [
+                    {
+                        "id": 999,
+                        "name": "2024-2025 учебный год",
+                        "typeCode": "Y",
+                        "num": 1,
+                        "children": [
+                            {
+                                "id": 201,
+                                "name": "1 полугодие",
+                                "typeCode": "HY",
+                                "num": 1,
+                                "items": [
+                                    {"id": 101, "name": "1 четверть", "typeCode": "Q", "num": 1},
+                                    {"id": 102, "name": "2 четверть", "typeCode": "Q", "num": 2}
+                                ]
+                            },
+                            {
+                                "id": 202,
+                                "name": "2 полугодие",
+                                "typeCode": "HY",
+                                "num": 2,
+                                "items": [
+                                    {"id": 103, "name": "3 четверть", "typeCode": "Q", "num": 3},
+                                    {"id": 104, "name": "4 четверть", "typeCode": "Q", "num": 4}
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        """.trimIndent()
+        val nestedItems = org.youschool.app.core.network.EschoolApiClient.parsePeriodsJson(nestedJson)
+        assertEquals(7, nestedItems.size) // 1 Year + 2 Half-years + 4 Quarters
+        assertTrue(nestedItems.any { it.id == 999L && it.typeCode == "Y" })
+        assertTrue(nestedItems.any { it.id == 201L && it.typeCode == "HY" })
+        assertTrue(nestedItems.any { it.id == 101L && it.typeCode == "Q" })
+
+        // Empty or malformed input should safely return emptyList
+        val emptyItems = org.youschool.app.core.network.EschoolApiClient.parsePeriodsJson("not-a-json")
+        assertTrue(emptyItems.isEmpty())
+    }
+
+    @Test
+    fun testNormalizeAndSortPeriodsPriorityAndNaming() {
+        val rawItems = listOf(
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 999, name = "Учебный год", typeCode = "Y", num = 1),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 202, name = "2 полугодие", typeCode = "HY", num = 2),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 102, name = "2 четверть", typeCode = "Q", num = 2),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 101, name = "1 четверть", typeCode = "Q", num = 1),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 201, name = "1 полугодие", typeCode = "HY", num = 1),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 104, name = "4 четверть", typeCode = "Q", num = 4),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 103, name = "3 четверть", typeCode = "Q", num = 3)
+        )
+
+        // Case 1: Student in 8th grade, currently in 2nd quarter (id 102, typeCode "Q", num 2)
+        // Expected: past quarters (Q1), current quarter (Q2 with isDefault=true), and Year ("Год").
+        // Future quarters (Q3, Q4) and irrelevant half-years (HY) MUST be excluded!
+        val quarterEntities = org.youschool.app.data.repository.SchoolRepositoryImpl.normalizeAndSortPeriods(rawItems, defaultPeriodId = 102)
+
+        assertEquals(3, quarterEntities.size)
+
+        assertEquals("1 четв.", quarterEntities[0].shortName)
+        assertEquals(101L, quarterEntities[0].id)
+        assertEquals(false, quarterEntities[0].isDefault)
+
+        assertEquals("2 четв.", quarterEntities[1].shortName)
+        assertEquals(102L, quarterEntities[1].id)
+        assertEquals(true, quarterEntities[1].isDefault) // default / active period marked
+
+        assertEquals("Год", quarterEntities[2].shortName)
+        assertEquals(999L, quarterEntities[2].id)
+        assertEquals(false, quarterEntities[2].isDefault)
+
+        // Case 2: Student in 10-11th grade, currently in 1st half-year (id 201, typeCode "HY", num 1)
+        // Expected: current half-year (HY1 with isDefault=true) and Year ("Год").
+        // Future half-year (HY2) and quarters (Q) MUST be excluded!
+        val hyEntities = org.youschool.app.data.repository.SchoolRepositoryImpl.normalizeAndSortPeriods(rawItems, defaultPeriodId = 201)
+
+        assertEquals(2, hyEntities.size)
+        assertEquals("1 полуг.", hyEntities[0].shortName)
+        assertEquals(201L, hyEntities[0].id)
+        assertEquals(true, hyEntities[0].isDefault)
+
+        assertEquals("Год", hyEntities[1].shortName)
+        assertEquals(999L, hyEntities[1].id)
+        assertEquals(false, hyEntities[1].isDefault)
+
+        // Case 3: Student in 10-11th grade in 2nd half-year (id 202, num 2)
+        val hy2Entities = org.youschool.app.data.repository.SchoolRepositoryImpl.normalizeAndSortPeriods(rawItems, defaultPeriodId = 202)
+        assertEquals(3, hy2Entities.size)
+        assertEquals("1 полуг.", hy2Entities[0].shortName)
+        assertEquals("2 полуг.", hy2Entities[1].shortName)
+        assertEquals(true, hy2Entities[1].isDefault)
+        assertEquals("Год", hy2Entities[2].shortName)
+
+        // Case 4: Duplicate period entries in eSchool API (e.g. from multiple faculty groups or profiles)
+        val duplicateRawItems = listOf(
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 999, name = "Учебный год", typeCode = "Y", num = 1),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 201, name = "1 полугодие", typeCode = "HY", num = 1),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 2012, name = "1 полугодие (дубликат)", typeCode = "HY", num = 1),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 202, name = "2 полугодие", typeCode = "HY", num = 2),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 2022, name = "2 полугодие (дубликат)", typeCode = "HY", num = 2)
+        )
+        // With defaultPeriodId = 202 (2nd half-year), each period number MUST appear at most once
+        val dedupedEntities = org.youschool.app.data.repository.SchoolRepositoryImpl.normalizeAndSortPeriods(duplicateRawItems, defaultPeriodId = 202)
+        assertEquals(3, dedupedEntities.size) // 1 полуг., 2 полуг., Год (NO duplicate 2 полуг.!)
+        assertEquals("1 полуг.", dedupedEntities[0].shortName)
+        assertEquals("2 полуг.", dedupedEntities[1].shortName)
+        assertEquals("Год", dedupedEntities[2].shortName)
+
+        // Case 5: When server returns Year ID (e.g. from getDiaryTtlMarksDefPeriod),
+        // it must NOT mark Year as current study period, but resolve the active study period via date range.
+        val now = System.currentTimeMillis()
+        val itemsWithDates = listOf(
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 999, name = "Учебный год", typeCode = "Y", num = 1, date1 = now - 1000000000L, date2 = now + 1000000000L),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 201, name = "1 полугодие", typeCode = "HY", num = 1, date1 = now - 500000000L, date2 = now + 500000000L),
+            org.youschool.app.core.network.dto.PeriodItemDto(id = 202, name = "2 полугодие", typeCode = "HY", num = 2, date1 = now + 600000000L, date2 = now + 1200000000L)
+        )
+        // Pass defaultPeriodId = 999 (Year ID from getDiaryTtlMarksDefPeriod)
+        val resolvedEntities = org.youschool.app.data.repository.SchoolRepositoryImpl.normalizeAndSortPeriods(itemsWithDates, defaultPeriodId = 999)
+        assertEquals(2, resolvedEntities.size) // Only active 1 полуг. and Год (future 2 полуг. is omitted!)
+        assertEquals("1 полуг.", resolvedEntities[0].shortName)
+        assertEquals(true, resolvedEntities[0].isDefault) // 1 полуг. is correctly default, NOT Year!
+        assertEquals("Год", resolvedEntities[1].shortName)
+        assertEquals(false, resolvedEntities[1].isDefault)
+    }
+
+    @Test
+    fun testNavBarDragHapticOptionAndCrossingLogic() {
+        val defaultSettings = org.youschool.app.ui.theme.ThemeSettings()
+        assertEquals(true, defaultSettings.isNavBarDragHapticEnabled)
+        assertEquals(true, defaultSettings.isHapticFeedbackEnabled)
+
+        // Simulate sliding from tab 0 to tab 3 with 4 tabs and capsuleWidth = 100px
+        val tabCount = 4
+        val capsuleWidthPx = 100f
+        var lastHoveredIndex = 0
+        val hapticTriggeredIndices = mutableListOf<Int>()
+
+        // Simulate continuous touch movements: 0px -> 60px (crosses to 1) -> 160px (crosses to 2) -> 260px (crosses to 3)
+        val dragOffsets = listOf(10f, 30f, 49f, 51f, 80f, 120f, 151f, 200f, 251f, 300f)
+        for (targetLeft in dragOffsets) {
+            val currentIndex = org.youschool.app.ui.navigation.BottomBarConfig.nearestTabIndex(targetLeft, capsuleWidthPx, tabCount)
+            if (currentIndex != lastHoveredIndex) {
+                lastHoveredIndex = currentIndex
+                hapticTriggeredIndices.add(currentIndex)
+            }
+        }
+        // Should have crossed into tab 1, tab 2, and tab 3 sequentially
+        assertEquals(listOf(1, 2, 3), hapticTriggeredIndices)
+
+        // Now simulate sliding back: 300px -> 240px (crosses back to 2) -> 140px (crosses back to 1) -> 40px (crosses back to 0)
+        val returnOffsets = listOf(280f, 240f, 180f, 140f, 80f, 40f, 0f)
+        val returnTriggeredIndices = mutableListOf<Int>()
+        for (targetLeft in returnOffsets) {
+            val currentIndex = org.youschool.app.ui.navigation.BottomBarConfig.nearestTabIndex(targetLeft, capsuleWidthPx, tabCount)
+            if (currentIndex != lastHoveredIndex) {
+                lastHoveredIndex = currentIndex
+                returnTriggeredIndices.add(currentIndex)
+            }
+        }
+        // Should have crossed back into tab 2, tab 1, and tab 0 sequentially
+        assertEquals(listOf(2, 1, 0), returnTriggeredIndices)
+    }
 }

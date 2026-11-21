@@ -4,6 +4,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.RequestBody
 import org.youschool.app.domain.model.*
@@ -360,6 +367,82 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 Result.success(periods)
             } catch (e: Exception) {
                 Result.failure(e)
+            }
+        }
+    }
+
+    suspend fun getAcademicPeriodItems(year: Int): Result<List<PeriodItemDto>> {
+        return executeWithAutoAuth { sessionId, route ->
+            try {
+                val request = Request.Builder()
+                    .url("$baseUrl/dict/periods2?year=$year")
+                    .get()
+                    .addHeader("Cookie", buildCookieHeader(sessionId, route))
+                    .build()
+
+                val response = client.newCall(request).execute()
+                if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
+                val body = response.body?.string() ?: ""
+                val items = parsePeriodsJson(body, json)
+                Result.success(items)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
+
+    companion object {
+        private val defaultJson = kotlinx.serialization.json.Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+            coerceInputValues = true
+        }
+
+        fun parsePeriodsJson(body: String, json: kotlinx.serialization.json.Json = defaultJson): List<PeriodItemDto> {
+            return try {
+                val element = json.parseToJsonElement(body)
+                val result = mutableListOf<PeriodItemDto>()
+
+                fun extractItems(el: JsonElement) {
+                    when (el) {
+                        is JsonArray -> {
+                            for (child in el) {
+                                extractItems(child)
+                            }
+                        }
+                        is JsonObject -> {
+                            val id = el["id"]?.jsonPrimitive?.longOrNull
+                            val name = el["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                            val typeCode = el["typeCode"]?.jsonPrimitive?.contentOrNull ?: ""
+                            if (id != null && id > 0 && name.isNotBlank()) {
+                                val date1 = el["date1"]?.jsonPrimitive?.longOrNull ?: 0L
+                                val date2 = el["date2"]?.jsonPrimitive?.longOrNull ?: 0L
+                                val num = el["num"]?.jsonPrimitive?.intOrNull ?: 1
+                                result.add(
+                                    PeriodItemDto(
+                                        id = id,
+                                        name = name,
+                                        date1 = date1,
+                                        date2 = date2,
+                                        typeCode = typeCode,
+                                        num = num
+                                    )
+                                )
+                            }
+                            for ((_, value) in el) {
+                                if (value is JsonArray || value is JsonObject) {
+                                    extractItems(value)
+                                }
+                            }
+                        }
+                        else -> Unit
+                    }
+                }
+
+                extractItems(element)
+                result.distinctBy { it.id }
+            } catch (_: Exception) {
+                emptyList()
             }
         }
     }

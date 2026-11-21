@@ -26,9 +26,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import org.youschool.app.domain.model.AcademicPeriod
 import org.youschool.app.domain.model.Grade
 import org.youschool.app.domain.model.SubjectAverage
 import org.youschool.app.domain.model.SubjectSimulation
@@ -49,10 +51,49 @@ enum class SubjectSortOrder(val title: String) {
 
 class GradesViewModel(private val repository: SchoolRepository) : ViewModel() {
 
-    val subjectAverages: StateFlow<List<SubjectAverage>> = repository.getSubjectAverages()
+    val periods: StateFlow<List<AcademicPeriod>> = repository.getPeriods()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val allGrades: StateFlow<List<Grade>> = repository.getAllGrades()
+    private val _selectedPeriodId = MutableStateFlow<Long?>(null)
+    val selectedPeriodId: StateFlow<Long?> = _selectedPeriodId.asStateFlow()
+
+    val activePeriod: StateFlow<AcademicPeriod?> = combine(periods, _selectedPeriodId) { periodList, selectedId ->
+        if (selectedId != null) {
+            periodList.firstOrNull { it.id == selectedId }
+        } else {
+            periodList.firstOrNull { it.isDefault } ?: periodList.firstOrNull()
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val isViewingDefaultPeriod: StateFlow<Boolean> = combine(periods, _selectedPeriodId) { periodList, selectedId ->
+        if (selectedId == null) {
+            true
+        } else {
+            val def = periodList.firstOrNull { it.isDefault }
+            def == null || def.id == selectedId
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val subjectAverages: StateFlow<List<SubjectAverage>> = activePeriod
+        .flatMapLatest { period ->
+            if (period != null) {
+                repository.getSubjectAveragesForPeriod(period.id)
+            } else {
+                repository.getSubjectAverages()
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val allGrades: StateFlow<List<Grade>> = activePeriod
+        .flatMapLatest { period ->
+            if (period != null) {
+                repository.getGradesForPeriod(period.id)
+            } else {
+                repository.getAllGrades()
+            }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val newGrades: StateFlow<List<Grade>> = repository.getNewGrades()
@@ -62,32 +103,58 @@ class GradesViewModel(private val repository: SchoolRepository) : ViewModel() {
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
     private val _simulations = MutableStateFlow<Map<String, SubjectSimulation>>(emptyMap())
-    val simulations: StateFlow<Map<String, SubjectSimulation>> = _simulations.asStateFlow()
+
+    val simulations: StateFlow<Map<String, SubjectSimulation>> = combine(activePeriod, _simulations) { period, allSims ->
+        val prefix = "${period?.id ?: 0L}_"
+        allSims.filterKeys { it.startsWith(prefix) }
+            .mapKeys { it.key.removePrefix(prefix) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    private fun simKey(subjectName: String): String {
+        val periodId = activePeriod.value?.id ?: 0L
+        return "${periodId}_$subjectName"
+    }
 
     fun updateSimulation(subjectName: String, simulation: SubjectSimulation) {
+        val key = simKey(subjectName)
         val current = _simulations.value.toMutableMap()
         if (!simulation.isActive) {
-            current.remove(subjectName)
+            current.remove(key)
         } else {
-            current[subjectName] = simulation
+            current[key] = simulation
         }
         _simulations.value = current
     }
 
     fun resetSimulation(subjectName: String) {
+        val key = simKey(subjectName)
         val current = _simulations.value.toMutableMap()
-        current.remove(subjectName)
+        current.remove(key)
         _simulations.value = current
     }
 
+    fun selectPeriod(periodId: Long) {
+        if (activePeriod.value?.id == periodId) return
+        _selectedPeriodId.value = periodId
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            repository.syncGrades(periodId)
+            _isRefreshing.value = false
+        }
+    }
+
     init {
-        refresh()
+        viewModelScope.launch {
+            repository.syncPeriods()
+            refresh()
+        }
     }
 
     fun refresh() {
         viewModelScope.launch {
             _isRefreshing.value = true
-            repository.syncGrades()
+            repository.syncPeriods()
+            repository.syncGrades(_selectedPeriodId.value)
             _isRefreshing.value = false
         }
     }
@@ -124,6 +191,9 @@ fun GradesScreen(
     modifier: Modifier = Modifier
 ) {
     val haptic = rememberHaptic()
+    val periods by viewModel.periods.collectAsState()
+    val activePeriod by viewModel.activePeriod.collectAsState()
+    val isViewingDefaultPeriod by viewModel.isViewingDefaultPeriod.collectAsState()
     val averages by viewModel.subjectAverages.collectAsState()
     val allGrades by viewModel.allGrades.collectAsState()
     val newGrades by viewModel.newGrades.collectAsState()
@@ -161,66 +231,83 @@ fun GradesScreen(
     Box(modifier = modifier.fillMaxSize()) {
         Scaffold(
             topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = "Оценки и успеваемость",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                actions = {
-                    Box {
-                        IconButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "Сортировка")
-                        }
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false }
-                        ) {
-                            SubjectSortOrder.entries.forEach { order ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = order.title,
-                                            fontWeight = if (order == sortOrder) FontWeight.Bold else FontWeight.Normal
+                Column {
+                    TopAppBar(
+                        title = {
+                            Text(
+                                text = "Оценки и успеваемость",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        },
+                        actions = {
+                            Box {
+                                IconButton(onClick = { showSortMenu = true }) {
+                                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "Сортировка")
+                                }
+                                DropdownMenu(
+                                    expanded = showSortMenu,
+                                    onDismissRequest = { showSortMenu = false }
+                                ) {
+                                    SubjectSortOrder.entries.forEach { order ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = order.title,
+                                                    fontWeight = if (order == sortOrder) FontWeight.Bold else FontWeight.Normal
+                                                )
+                                            },
+                                            onClick = {
+                                                sortOrder = order
+                                                showSortMenu = false
+                                            },
+                                            leadingIcon = if (order == sortOrder) {
+                                                { Icon(Icons.Rounded.Check, contentDescription = null) }
+                                            } else null
                                         )
-                                    },
-                                    onClick = {
-                                        sortOrder = order
-                                        showSortMenu = false
-                                    },
-                                    leadingIcon = if (order == sortOrder) {
-                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
-                                    } else null
-                                )
+                                    }
+                                }
+                            }
+                            IconButton(onClick = {
+                                haptic.click()
+                                viewModel.refresh()
+                            }) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = "Обновить")
                             }
                         }
+                    )
+                    if (periods.size > 1) {
+                        PeriodSelectorRow(
+                            periods = periods,
+                            activePeriodId = activePeriod?.id,
+                            onSelectPeriod = { periodId ->
+                                viewModel.selectPeriod(periodId)
+                            }
+                        )
                     }
-                    IconButton(onClick = {
-                        haptic.click()
-                        viewModel.refresh()
-                    }) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "Обновить")
+                    if (isRefreshing) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(2.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
-            )
-        }
-    ) { innerPadding ->
-        LazyColumn(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-            contentPadding = PaddingValues(
-                start = 16.dp,
-                top = 12.dp,
-                end = 16.dp,
-                bottom = 16.dp + LocalBottomBarPadding.current
-            ),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // New Grades Section (auto-hidden when empty)
-            if (newGrades.isNotEmpty()) {
+            }
+        ) { innerPadding ->
+            LazyColumn(
+                modifier = modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    top = 12.dp,
+                    end = 16.dp,
+                    bottom = 16.dp + LocalBottomBarPadding.current
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // New Grades Section (auto-hidden when empty or not viewing default period)
+                if (isViewingDefaultPeriod && newGrades.isNotEmpty()) {
                 item(key = "new_grades_section") {
                     NewGradesSection(
                         newGrades = newGrades,
@@ -392,6 +479,84 @@ fun GradesScreen(
         }
     }
 }
+}
+
+@Composable
+fun PeriodSelectorRow(
+    periods: List<AcademicPeriod>,
+    activePeriodId: Long?,
+    onSelectPeriod: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val haptic = rememberHaptic()
+    val scrollState = rememberScrollState()
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(scrollState)
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        periods.forEach { period ->
+            val isSelected = (period.id == activePeriodId)
+            FilterChip(
+                selected = isSelected,
+                onClick = {
+                    haptic.click()
+                    onSelectPeriod(period.id)
+                },
+                label = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = period.shortName,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                        )
+                        if (period.isDefault) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f)
+                                } else {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                },
+                                modifier = Modifier.padding(start = 2.dp)
+                            ) {
+                                Text(
+                                    text = "тек.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 9.sp,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
+                },
+                shape = RoundedCornerShape(12.dp),
+                colors = FilterChipDefaults.filterChipColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                border = FilterChipDefaults.filterChipBorder(
+                    enabled = true,
+                    selected = isSelected,
+                    borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    selectedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                )
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -873,6 +1038,31 @@ fun SubjectGradeCard(
                             tint = if (hasSimulation) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                             modifier = Modifier.size(22.dp)
                         )
+                    }
+
+                    if (!item.finalMark.isNullOrBlank()) {
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            modifier = Modifier.padding(start = 4.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = "Итог: ",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.75f)
+                                )
+                                Text(
+                                    text = item.finalMark,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+                        }
                     }
 
                     Surface(

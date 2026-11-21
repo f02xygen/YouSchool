@@ -87,6 +87,7 @@ data class ThemeSettings(
     val isDynamicColor: Boolean = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S),
     val colorPalette: AppColorPalette = AppColorPalette.BLUE,
     val isHapticFeedbackEnabled: Boolean = true,
+    val isNavBarDragHapticEnabled: Boolean = true,
     val areNotificationsEnabled: Boolean = true,
     val gradeNotificationsEnabled: Boolean = true,
     val homeworkNotificationsEnabled: Boolean = true,
@@ -188,6 +189,7 @@ class ThemeManager(private val context: Context) {
         val navName = prefs.getString("nav_bar_style", NavigationBarStyle.STANDARD.name) ?: NavigationBarStyle.STANDARD.name
         val gradeModeName = prefs.getString("grade_color_mode", GradeColorMode.BY_VALUE.name) ?: GradeColorMode.BY_VALUE.name
         val haptic = prefs.getBoolean("haptic_feedback_enabled", true)
+        val navBarDragHaptic = prefs.getBoolean("nav_bar_drag_haptic_enabled", true)
         val notifications = prefs.getBoolean("notifications_enabled", true)
         val onboarding = prefs.getBoolean("has_completed_onboarding", false)
 
@@ -222,6 +224,7 @@ class ThemeManager(private val context: Context) {
             isDynamicColor = isDynamic,
             colorPalette = palette,
             isHapticFeedbackEnabled = haptic,
+            isNavBarDragHapticEnabled = navBarDragHaptic,
             areNotificationsEnabled = notifications,
             gradeNotificationsEnabled = prefs.getBoolean("grade_notifications_enabled", true),
             homeworkNotificationsEnabled = prefs.getBoolean("homework_notifications_enabled", true),
@@ -291,6 +294,11 @@ class ThemeManager(private val context: Context) {
     fun setHapticFeedbackEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("haptic_feedback_enabled", enabled).apply()
         _themeSettings.value = _themeSettings.value.copy(isHapticFeedbackEnabled = enabled)
+    }
+
+    fun setNavBarDragHapticEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("nav_bar_drag_haptic_enabled", enabled).apply()
+        _themeSettings.value = _themeSettings.value.copy(isNavBarDragHapticEnabled = enabled)
     }
 
     fun setNotificationsEnabled(enabled: Boolean) {
