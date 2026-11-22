@@ -1,14 +1,11 @@
 package org.youschool.app.data.repository
 
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import org.youschool.app.core.notification.NotificationHelper
+import org.youschool.app.core.platform.RepositoryPlatform
 import org.youschool.app.core.notification.NotificationRules
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -20,7 +17,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import org.youschool.app.core.auth.AuthManager
-import org.youschool.app.core.database.YouSchoolDatabase
+import org.youschool.app.core.database.SchoolDatabase
 import org.youschool.app.core.database.entities.GradeEntity
 import org.youschool.app.core.database.entities.HomeworkStatusEntity
 import org.youschool.app.core.database.entities.LessonEntity
@@ -38,26 +35,50 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class SchoolRepositoryImpl(
-    private val context: Context,
-    private val database: YouSchoolDatabase,
+    private val platform: RepositoryPlatform,
     private val apiClient: EschoolApiClient,
     private val authManager: AuthManager
 ) : SchoolRepository {
 
+    private var operationContext: String? = null
+    private val database: SchoolDatabase get() = platform.database(operationContext ?: authManager.contextKey())
+    private suspend fun <T> inSession(allowContextChange: Boolean = false, block: suspend () -> T): T {
+        val requestedContext = authManager.contextKey()
+        return authManager.sessionLock.run {
+            if (!allowContextChange && requestedContext != authManager.contextKey()) {
+                throw CancellationException("Организация изменилась")
+            }
+            val previous = operationContext
+            if (previous == null) operationContext = requestedContext
+            try { block() } finally { operationContext = previous }
+        }
+    }
     private val syncMutex = Mutex()
     private val json = Json { ignoreUnknownKeys = true }
 
-    override suspend fun getMessageThreads(before: Long?) = apiClient.getMessageThreads(before)
-    override suspend fun getMessageThread(id: Long) = apiClient.getMessageThread(id)
-    override suspend fun getMessages(id: Long, before: Long?) = apiClient.getMessages(id, before)
-    override suspend fun getMessageRecipients() = apiClient.getMessageRecipients()
-    override suspend fun getNoReplyId() = apiClient.getNoReplyId()
-    override suspend fun createPrivateThread(recipientId: Long) = apiClient.createPrivateThread(recipientId)
-    override suspend fun sendMessage(threadId: Long, text: String, uid: String) = apiClient.sendMessage(threadId, text, uid)
-    override suspend fun markMessageRead(id: Long) = apiClient.markMessageRead(id)
+    override suspend fun getMessageThreads(before: Long?) = inSession { getMessageThreadsInContext(before) }
+    private suspend fun getMessageThreadsInContext(before: Long?) = apiClient.getMessageThreads(before)
+    override suspend fun getMessageThread(id: Long) = inSession { getMessageThreadInContext(id) }
+    private suspend fun getMessageThreadInContext(id: Long) = apiClient.getMessageThread(id)
+    override suspend fun getMessages(id: Long, before: Long?) = inSession { getMessagesInContext(id, before) }
+    private suspend fun getMessagesInContext(id: Long, before: Long?) = apiClient.getMessages(id, before)
+    override suspend fun getMessageRecipients() = inSession { getMessageRecipientsInContext() }
+    private suspend fun getMessageRecipientsInContext() = apiClient.getMessageRecipients()
+    override suspend fun getNoReplyId() = inSession { getNoReplyIdInContext() }
+    private suspend fun getNoReplyIdInContext() = apiClient.getNoReplyId()
+    override suspend fun createPrivateThread(recipientId: Long) = inSession { createPrivateThreadInContext(recipientId) }
+    private suspend fun createPrivateThreadInContext(recipientId: Long) = apiClient.createPrivateThread(recipientId)
+    override suspend fun sendMessage(threadId: Long, text: String, uid: String) = inSession { sendMessageInContext(threadId, text, uid) }
+    private suspend fun sendMessageInContext(threadId: Long, text: String, uid: String) = apiClient.sendMessage(threadId, text, uid)
+    override suspend fun markMessageRead(id: Long) = inSession { markMessageReadInContext(id) }
+    private suspend fun markMessageReadInContext(id: Long) = apiClient.markMessageRead(id)
 
-    override fun getLessonsForDay(dateMillis: Long): Flow<List<Lesson>> {
+    override fun getLessonsForDay(dateMillis: Long): Flow<List<Lesson>> = authManager.revision.flatMapLatest { getLessonsForDayInContext(dateMillis) }
+
+    private fun getLessonsForDayInContext(dateMillis: Long): Flow<List<Lesson>> {
+        val database = platform.database(authManager.contextKey())
         val calendar = Calendar.getInstance().apply {
             timeInMillis = dateMillis
             set(Calendar.HOUR_OF_DAY, 0)
@@ -88,7 +109,10 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override fun getAllHomeworks(): Flow<List<Lesson>> {
+    override fun getAllHomeworks(): Flow<List<Lesson>> = authManager.revision.flatMapLatest { getAllHomeworksInContext() }
+
+    private fun getAllHomeworksInContext(): Flow<List<Lesson>> {
+        val database = platform.database(authManager.contextKey())
         val lessonsFlow = database.lessonDao().getAllLessonsWithHomework()
         val statusFlow = database.homeworkStatusDao().getAllStatuses()
 
@@ -98,7 +122,10 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override fun getUpcomingHomeworks(): Flow<List<Lesson>> {
+    override fun getUpcomingHomeworks(): Flow<List<Lesson>> = authManager.revision.flatMapLatest { getUpcomingHomeworksInContext() }
+
+    private fun getUpcomingHomeworksInContext(): Flow<List<Lesson>> {
+        val database = platform.database(authManager.contextKey())
         val calendar = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0)
             set(Calendar.MINUTE, 0)
@@ -119,7 +146,10 @@ class SchoolRepositoryImpl(
     private val isoDateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    override fun getNewGrades(): Flow<List<Grade>> {
+    override fun getNewGrades(): Flow<List<Grade>> = authManager.revision.flatMapLatest { getNewGradesInContext() }
+
+    private fun getNewGradesInContext(): Flow<List<Grade>> {
+        val database = platform.database(authManager.contextKey())
         val defaultPeriodFlow = database.periodDao().getDefaultPeriod()
         val gradesFlow = defaultPeriodFlow.flatMapLatest { def ->
             if (def != null && def.id > 0) {
@@ -129,11 +159,11 @@ class SchoolRepositoryImpl(
             }
         }
         val readFlow = database.readGradeDao().getAllReadGrades()
-        val prefs = context.getSharedPreferences("youschool_prefs", Context.MODE_PRIVATE)
+        val prefs = platform.preferences("youschool_prefs")
 
         return combine(gradesFlow, readFlow) { grades, readEntities ->
             val userId = authManager.getUserId()
-            val initializedKey = "initialized_grades_v2_$userId"
+            val initializedKey = "initialized_grades_v2_${authManager.contextKey()}"
             if (!prefs.getBoolean(initializedKey, false)) {
                 // Initial sync has not yet completed; ignore past grades
                 return@combine emptyList()
@@ -163,7 +193,10 @@ class SchoolRepositoryImpl(
     }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    override fun getAllGrades(): Flow<List<Grade>> {
+    override fun getAllGrades(): Flow<List<Grade>> = authManager.revision.flatMapLatest { getAllGradesInContext() }
+
+    private fun getAllGradesInContext(): Flow<List<Grade>> {
+        val database = platform.database(authManager.contextKey())
         val defaultPeriodFlow = database.periodDao().getDefaultPeriod()
         return defaultPeriodFlow.flatMapLatest { def ->
             if (def != null && def.id > 0) {
@@ -182,7 +215,10 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override fun getGradesForPeriod(periodId: Long): Flow<List<Grade>> {
+    override fun getGradesForPeriod(periodId: Long): Flow<List<Grade>> = authManager.revision.flatMapLatest { getGradesForPeriodInContext(periodId) }
+
+    private fun getGradesForPeriodInContext(periodId: Long): Flow<List<Grade>> {
+        val database = platform.database(authManager.contextKey())
         val gradesFlow = database.gradeDao().getGradesForPeriod(periodId)
         val readFlow = database.readGradeDao().getAllReadGrades()
 
@@ -196,7 +232,10 @@ class SchoolRepositoryImpl(
     }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    override fun getSubjectAverages(): Flow<List<SubjectAverage>> {
+    override fun getSubjectAverages(): Flow<List<SubjectAverage>> = authManager.revision.flatMapLatest { getSubjectAveragesInContext() }
+
+    private fun getSubjectAveragesInContext(): Flow<List<SubjectAverage>> {
+        val database = platform.database(authManager.contextKey())
         val defaultPeriodFlow = database.periodDao().getDefaultPeriod()
         return defaultPeriodFlow.flatMapLatest { def ->
             if (def != null && def.id > 0) {
@@ -209,7 +248,10 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override fun getSubjectAveragesForPeriod(periodId: Long): Flow<List<SubjectAverage>> {
+    override fun getSubjectAveragesForPeriod(periodId: Long): Flow<List<SubjectAverage>> = authManager.revision.flatMapLatest { getSubjectAveragesForPeriodInContext(periodId) }
+
+    private fun getSubjectAveragesForPeriodInContext(periodId: Long): Flow<List<SubjectAverage>> {
+        val database = platform.database(authManager.contextKey())
         val gradesFlow = database.gradeDao().getGradesForPeriod(periodId)
         val unitsFlow = database.periodUnitDao().getUnitsForPeriod(periodId)
 
@@ -219,7 +261,10 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override fun getPeriods(): Flow<List<AcademicPeriod>> {
+    override fun getPeriods(): Flow<List<AcademicPeriod>> = authManager.revision.flatMapLatest { getPeriodsInContext() }
+
+    private fun getPeriodsInContext(): Flow<List<AcademicPeriod>> {
+        val database = platform.database(authManager.contextKey())
         return database.periodDao().getAllPeriods().map { entities ->
             entities.map { it.toDomain() }
         }
@@ -253,7 +298,8 @@ class SchoolRepositoryImpl(
         }.sortedBy { it.subjectName }
     }
 
-    override suspend fun syncDayLessons(dateMillis: Long): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun syncDayLessons(dateMillis: Long): Result<Unit> = inSession { syncDayLessonsInContext(dateMillis) }
+    private suspend fun syncDayLessonsInContext(dateMillis: Long): Result<Unit> = withContext(Dispatchers.IO) {
         syncMutex.withLock {
             val userId = authManager.getUserId()
             if (userId <= 0) return@withContext Result.failure(Exception("Пользователь не авторизован"))
@@ -290,7 +336,7 @@ class SchoolRepositoryImpl(
                                 }
                                 for (v in part.variant) {
                                     if (!v.text.isNullOrBlank()) {
-                                        val cleanText = android.text.Html.fromHtml(v.text, android.text.Html.FROM_HTML_MODE_COMPACT).toString().trim()
+                                        val cleanText = org.jsoup.Jsoup.parse(v.text).wholeText().trim()
                                         homeworkText += (if (homeworkText.isNotEmpty()) "\n" else "") + cleanText
                                     }
                                     for (f in v.file) {
@@ -338,7 +384,8 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override suspend fun syncPeriods(): Result<List<AcademicPeriod>> = withContext(Dispatchers.IO) {
+    override suspend fun syncPeriods(): Result<List<AcademicPeriod>> = inSession { syncPeriodsInContext() }
+    private suspend fun syncPeriodsInContext(): Result<List<AcademicPeriod>> = withContext(Dispatchers.IO) {
         val userId = authManager.getUserId()
         if (userId <= 0) return@withContext Result.failure(Exception("Пользователь не авторизован"))
 
@@ -389,7 +436,8 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override suspend fun syncGrades(periodId: Long?): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun syncGrades(periodId: Long?): Result<Unit> = inSession { syncGradesInContext(periodId) }
+    private suspend fun syncGradesInContext(periodId: Long?): Result<Unit> = withContext(Dispatchers.IO) {
         syncMutex.withLock {
             val userId = authManager.getUserId()
             if (userId <= 0) return@withContext Result.failure(Exception("Пользователь не авторизован"))
@@ -448,13 +496,13 @@ class SchoolRepositoryImpl(
                     }
 
                     if (isDefaultPeriod) {
-                        val prefs = context.getSharedPreferences("youschool_prefs", Context.MODE_PRIVATE)
+                        val prefs = platform.preferences("youschool_prefs")
                         if (authManager.getUserId() != userId) return@withContext Result.failure(Exception("Аккаунт изменился"))
-                        val initializedKey = "initialized_grades_v2_$userId"
-                        val notificationPrefs = context.getSharedPreferences("youschool_notification_state", Context.MODE_PRIVATE)
-                        val seenKey = "grades_${userId}_$targetPeriodId"
+                        val initializedKey = "initialized_grades_v2_${authManager.contextKey()}"
+                        val notificationPrefs = platform.preferences("youschool_notification_state")
+                        val seenKey = "grades_${authManager.contextKey()}_$targetPeriodId"
                         val keys = entities.associateBy { "${it.unitId}_${it.lessonId}_${it.markDate}_${it.markVal}_${it.workType}" }
-                        val seen = notificationPrefs.getStringSet(seenKey, null)?.toSet()
+                        val seen = notificationPrefs.getString(seenKey)?.let { json.decodeFromString<Set<String>>(it) }
                         val isFirstGradesSync = !prefs.getBoolean(initializedKey, false) || seen == null
                         val newKeys = NotificationRules.newKeys(keys.keys, seen)
 
@@ -464,7 +512,7 @@ class SchoolRepositoryImpl(
                                 ReadGradeEntity(key)
                             }
                             database.readGradeDao().markAsRead(readEntities)
-                            prefs.edit().putBoolean(initializedKey, true).apply()
+                            prefs.putBoolean(initializedKey, true)
                         } else if (newKeys.isNotEmpty()) {
                             val nonNewEntities = entities.filter { entity ->
                                 val key = "${entity.unitId}_${entity.lessonId}_${entity.markDate}_${entity.markVal}_${entity.workType}"
@@ -481,11 +529,8 @@ class SchoolRepositoryImpl(
                         database.gradeDao().deleteGradesForPeriod(0L)
                         database.gradeDao().replaceGradesForPeriod(targetPeriodId, entities)
 
-                        notificationPrefs.edit().putStringSet(seenKey, (seen.orEmpty() + keys.keys).toSet()).apply()
-                        val settings = (context.applicationContext as org.youschool.app.YouSchoolApp).themeManager.themeSettings.value
-                        if (settings.areNotificationsEnabled && settings.gradeNotificationsEnabled && newKeys.isNotEmpty()) {
-                            NotificationHelper.showNewGradesNotification(context, newKeys.mapNotNull { keys[it] })
-                        }
+                        notificationPrefs.putString(seenKey, json.encodeToString((seen.orEmpty() + keys.keys).toSet()))
+                        if (newKeys.isNotEmpty()) platform.notifyGrades(newKeys.mapNotNull { keys[it] })
                     } else {
                         // Non-default period
                         database.gradeDao().replaceGradesForPeriod(targetPeriodId, entities)
@@ -614,38 +659,18 @@ class SchoolRepositoryImpl(
         isDefault = isDefault
     )
 
-    private fun isNetworkAvailable(): Boolean {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
-        val active = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(active) ?: return false
-        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
-            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
-            return false
-        }
-        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-            val hasPhysical = cm.allNetworks.any { net ->
-                if (net == active) return@any false
-                val c = cm.getNetworkCapabilities(net) ?: return@any false
-                !c.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
-                        c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                        c.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            }
-            if (!hasPhysical) return false
-        }
-        return true
-    }
+    private fun isNetworkAvailable(): Boolean = platform.isNetworkAvailable()
 
-    override suspend fun toggleHomeworkStatus(lessonId: Long, isDone: Boolean, comment: String?) = withContext(Dispatchers.IO) {
+    override suspend fun toggleHomeworkStatus(lessonId: Long, isDone: Boolean, comment: String?) = inSession { toggleHomeworkStatusInContext(lessonId, isDone, comment) }
+    private suspend fun toggleHomeworkStatusInContext(lessonId: Long, isDone: Boolean, comment: String?) = withContext(Dispatchers.IO) {
         // 1. Instant local update for offline-first responsiveness
         database.homeworkStatusDao().setStatus(HomeworkStatusEntity(lessonId, isDone))
 
         // 2. Synchronize with server if lesson has a homework partId
         val lesson = database.lessonDao().getLessonById(lessonId)
         val partId = lesson?.homeworkPartId
-        android.util.Log.d("SchoolRepository", "toggleHomeworkStatus: lessonId=$lessonId, partId=$partId, isNetworkAvailable=${isNetworkAvailable()}")
         if (partId != null) {
             if (!isNetworkAvailable()) {
-                android.util.Log.d("SchoolRepository", "Enqueuing offline homework sync: partId=$partId, isDone=$isDone")
                 database.pendingHomeworkSyncDao().enqueue(
                     PendingHomeworkSyncEntity(partId, lessonId, isDone, comment)
                 )
@@ -654,7 +679,6 @@ class SchoolRepositoryImpl(
                 if (result.isSuccess) {
                     database.pendingHomeworkSyncDao().remove(partId)
                 } else {
-                    android.util.Log.d("SchoolRepository", "API failed, enqueuing offline sync: partId=$partId")
                     database.pendingHomeworkSyncDao().enqueue(
                         PendingHomeworkSyncEntity(partId, lessonId, isDone, comment)
                     )
@@ -663,7 +687,8 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override suspend fun syncPendingHomeworkStatus(): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun syncPendingHomeworkStatus(): Result<Unit> = inSession { syncPendingHomeworkStatusInContext() }
+    private suspend fun syncPendingHomeworkStatusInContext(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val pending = database.pendingHomeworkSyncDao().getAllPendingList()
             for (item in pending) {
@@ -678,9 +703,10 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override suspend fun enqueueHomeworkResultUpload(partId: Long, file: File): Result<PendingHomeworkUploadEntity> = withContext(Dispatchers.IO) {
+    override suspend fun enqueueHomeworkResultUpload(partId: Long, file: File): Result<PendingHomeworkUploadEntity> = inSession { enqueueHomeworkResultUploadInContext(partId, file) }
+    private suspend fun enqueueHomeworkResultUploadInContext(partId: Long, file: File): Result<PendingHomeworkUploadEntity> = withContext(Dispatchers.IO) {
         try {
-            val uploadsDir = File(context.filesDir, "pending_uploads").apply { mkdirs() }
+            val uploadsDir = File(platform.filesDir, "pending_uploads/${authManager.contextKey()}").apply { mkdirs() }
             val persistentFile = File(uploadsDir, "upload_${System.currentTimeMillis()}_${file.name}")
             file.copyTo(persistentFile, overwrite = true)
             val entity = PendingHomeworkUploadEntity(
@@ -697,11 +723,15 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override fun getPendingHomeworkUploads(partId: Long): Flow<List<PendingHomeworkUploadEntity>> {
+    override fun getPendingHomeworkUploads(partId: Long): Flow<List<PendingHomeworkUploadEntity>> = authManager.revision.flatMapLatest { getPendingHomeworkUploadsInContext(partId) }
+
+    private fun getPendingHomeworkUploadsInContext(partId: Long): Flow<List<PendingHomeworkUploadEntity>> {
+        val database = platform.database(authManager.contextKey())
         return database.pendingHomeworkUploadDao().getPendingForPartFlow(partId)
     }
 
-    override suspend fun syncPendingHomeworkUploads(): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun syncPendingHomeworkUploads(): Result<Unit> = inSession { syncPendingHomeworkUploadsInContext() }
+    private suspend fun syncPendingHomeworkUploadsInContext(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val pending = database.pendingHomeworkUploadDao().getAllPendingList()
             var failure: Exception? = null
@@ -725,7 +755,8 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override suspend fun removePendingHomeworkUpload(uploadId: Long): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun removePendingHomeworkUpload(uploadId: Long): Result<Unit> = inSession { removePendingHomeworkUploadInContext(uploadId) }
+    private suspend fun removePendingHomeworkUploadInContext(uploadId: Long): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val pending = database.pendingHomeworkUploadDao().getAllPendingList().find { it.id == uploadId }
             if (pending != null) {
@@ -738,14 +769,18 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override fun getPendingSyncCount(): Flow<Int> {
+    override fun getPendingSyncCount(): Flow<Int> = authManager.revision.flatMapLatest { getPendingSyncCountInContext() }
+
+    private fun getPendingSyncCountInContext(): Flow<Int> {
+        val database = platform.database(authManager.contextKey())
         return combine(
             database.pendingHomeworkSyncDao().getPendingCountFlow(),
             database.pendingHomeworkUploadDao().getPendingCountFlow()
         ) { a, b -> a + b }
     }
 
-    override suspend fun syncAllPending(): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun syncAllPending(): Result<Unit> = inSession { syncAllPendingInContext() }
+    private suspend fun syncAllPendingInContext(): Result<Unit> = withContext(Dispatchers.IO) {
         var err: Throwable? = null
         val statusRes = syncPendingHomeworkStatus()
         if (statusRes.isFailure) err = statusRes.exceptionOrNull()
@@ -754,7 +789,8 @@ class SchoolRepositoryImpl(
         if (err != null) Result.failure(err) else Result.success(Unit)
     }
 
-    override suspend fun getHomeworkResultFiles(partId: Long): Result<List<HomeworkResultFile>> = withContext(Dispatchers.IO) {
+    override suspend fun getHomeworkResultFiles(partId: Long): Result<List<HomeworkResultFile>> = inSession { getHomeworkResultFilesInContext(partId) }
+    private suspend fun getHomeworkResultFilesInContext(partId: Long): Result<List<HomeworkResultFile>> = withContext(Dispatchers.IO) {
         val prsId = authManager.getPrsId()
         val detailsResult = apiClient.getHomeworkDetails(partId, prsId)
         detailsResult.map { details ->
@@ -769,7 +805,8 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override suspend fun uploadHomeworkResult(partId: Long, file: File): Result<HomeworkResultFile> = withContext(Dispatchers.IO) {
+    override suspend fun uploadHomeworkResult(partId: Long, file: File): Result<HomeworkResultFile> = inSession { uploadHomeworkResultInContext(partId, file) }
+    private suspend fun uploadHomeworkResultInContext(partId: Long, file: File): Result<HomeworkResultFile> = withContext(Dispatchers.IO) {
         val prsId = authManager.getPrsId()
         val uploadResult = apiClient.uploadHomeworkResultFile(partId, prsId, file)
         uploadResult.map { dto ->
@@ -782,75 +819,37 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override suspend fun deleteHomeworkResult(partId: Long, fileId: Long): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun deleteHomeworkResult(partId: Long, fileId: Long): Result<Unit> = inSession { deleteHomeworkResultInContext(partId, fileId) }
+    private suspend fun deleteHomeworkResultInContext(partId: Long, fileId: Long): Result<Unit> = withContext(Dispatchers.IO) {
         val prsId = authManager.getPrsId()
         val delResult = apiClient.deleteHomeworkResultFile(partId, prsId, fileId)
         delResult.map { Unit }
     }
 
-    override suspend fun login(login: String, rawPassword: String, captchaToken: String?): Result<UserProfile> {
-        val hash = AuthManager.sha256(rawPassword)
-        val result = apiClient.login(login, hash, captchaToken)
-        return if (result.isSuccess) {
-            val state = result.getOrNull()
-            val userId = state?.userId ?: state?.user?.userId ?: -1L
-            val prsId = state?.user?.prsId ?: -1L
-            val firstName = state?.profile?.firstName ?: ""
-            val lastName = state?.profile?.lastName ?: ""
-            val fullName = "$lastName $firstName".trim().ifEmpty { login }
-            val school = state?.user?.currentPosition?.orgName ?: "Школа"
-            val role = state?.user?.roles?.firstOrNull() ?: "ROLE_STUDENT"
-
-            authManager.saveCredentials(login, rawPassword)
-            authManager.saveUserInfo(userId, prsId, fullName, school)
-
-            org.youschool.app.core.notification.GradesNotificationScheduler.schedule(context)
-            val profile = UserProfile(userId, prsId, fullName, school, role)
-            Result.success(profile)
-        } else {
-            Result.failure(result.exceptionOrNull() ?: Exception("Ошибка авторизации"))
-        }
+    override suspend fun login(login: String, rawPassword: String, captchaToken: String?): Result<UserProfile> = inSession(allowContextChange = true) { loginInContext(login, rawPassword, captchaToken) }
+    private suspend fun loginInContext(login: String, rawPassword: String, captchaToken: String?): Result<UserProfile> {
+        if (authManager.getLogin() != login) authManager.clear()
+        val result = apiClient.login(login, AuthManager.sha256(rawPassword), captchaToken)
+        if (result.isFailure) return Result.failure(result.exceptionOrNull()!!)
+        authManager.saveCredentials(login, rawPassword)
+        authManager.acceptState(result.getOrThrow())
+        platform.onLogin()
+        return Result.success(UserProfile(authManager.getUserId(), authManager.getPrsId(), authManager.getFullName(), authManager.getSchoolName(), "ROLE_STUDENT"))
     }
-
     override fun isUserLoggedIn(): Boolean = authManager.hasCredentials()
+    override fun getUserProfile(): UserProfile? = if (authManager.getUserId() <= 0) null else UserProfile(
+        authManager.getUserId(), authManager.getPrsId(), authManager.getFullName(), authManager.getSchoolName(), "ROLE_STUDENT")
+    override fun logout() { authManager.clear(); platform.onLogout() }
 
-    override fun getUserProfile(): UserProfile? {
-        val userId = authManager.getUserId()
-        if (userId <= 0) return null
-        return UserProfile(
-            userId = userId,
-            prsId = authManager.getPrsId(),
-            fullName = authManager.getFullName(),
-            schoolName = authManager.getSchoolName(),
-            role = "ROLE_STUDENT"
-        )
-    }
-
-    override fun logout() {
-        val userId = authManager.getUserId()
-        authManager.clear()
-        NotificationHelper.cancelAll(context)
-        org.youschool.app.core.notification.GradesNotificationScheduler.cancel(context)
-        context.getSharedPreferences("youschool_prefs", Context.MODE_PRIVATE)
-            .edit()
-            .remove("initialized_grades_$userId")
-            .remove("initialized_grades_v2_$userId")
-            .apply()
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-            try {
-                database.periodDao().clearAllPeriods()
-                database.periodUnitDao().clearAllUnits()
-            } catch (_: Exception) {}
-        }
-    }
-
-    override suspend fun markGradeAsRead(markKey: String) {
+    override suspend fun markGradeAsRead(markKey: String) = inSession { markGradeAsReadInContext(markKey) }
+    private suspend fun markGradeAsReadInContext(markKey: String) {
         withContext(Dispatchers.IO) {
             database.readGradeDao().markAsRead(ReadGradeEntity(markKey))
         }
     }
 
-    override suspend fun markAllGradesAsRead() {
+    override suspend fun markAllGradesAsRead() = inSession { markAllGradesAsReadInContext() }
+    private suspend fun markAllGradesAsReadInContext() {
         withContext(Dispatchers.IO) {
             val grades = database.gradeDao().getAllGrades().firstOrNull() ?: emptyList()
             val entities = grades.map { entity ->
@@ -861,22 +860,25 @@ class SchoolRepositoryImpl(
         }
     }
 
-    override suspend fun restoreGradeReadStatus(markKeys: List<String>) {
+    override suspend fun restoreGradeReadStatus(markKeys: List<String>) = inSession { restoreGradeReadStatusInContext(markKeys) }
+    private suspend fun restoreGradeReadStatusInContext(markKeys: List<String>) {
         withContext(Dispatchers.IO) {
             database.readGradeDao().unmarkMultipleAsRead(markKeys)
         }
     }
 
-    override suspend fun unmarkAllGradesAsRead() {
+    override suspend fun unmarkAllGradesAsRead() = inSession { unmarkAllGradesAsReadInContext() }
+    private suspend fun unmarkAllGradesAsReadInContext() {
         withContext(Dispatchers.IO) {
             val keys = database.readGradeDao().getAllReadGradeKeys()
             database.readGradeDao().unmarkMultipleAsRead(keys)
         }
     }
 
-    override suspend fun downloadHomeworkFile(fileId: Long, fileName: String, variantId: Long?): Result<File> = withContext(Dispatchers.IO) {
+    override suspend fun downloadHomeworkFile(fileId: Long, fileName: String, variantId: Long?): Result<File> = inSession { downloadHomeworkFileInContext(fileId, fileName, variantId) }
+    private suspend fun downloadHomeworkFileInContext(fileId: Long, fileName: String, variantId: Long?): Result<File> = withContext(Dispatchers.IO) {
         val safeName = fileName.replace(Regex("[/\\\\?%*:|\"<>]"), "_")
-        val destinationFile = File(context.cacheDir, "homework_files/$fileId/$safeName")
+        val destinationFile = File(platform.filesDir, "homework_files/${authManager.contextKey()}/$fileId/$safeName")
         if (destinationFile.exists() && destinationFile.length() > 0) {
             return@withContext Result.success(destinationFile)
         }

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Java AWT needs this hint in tiling/non-reparenting window managers (e.g. Niri).
+export _JAVA_AWT_WM_NONREPARENTING="${_JAVA_AWT_WM_NONREPARENTING:-1}"
+exec "$(dirname "$(readlink -f "$0")")/bin/youschool" "$@"

@@ -85,7 +85,11 @@ class MainActivity : ComponentActivity() {
             val syncStatus by app.syncManager.syncStatus.collectAsState()
             val haptic = rememberHaptic()
 
+            val profileRevision by app.authManager.revision.collectAsState()
             YouSchoolTheme(settings = themeSettings) {
+                if (repository.isUserLoggedIn() && app.authManager.selectionRequired) {
+                    org.youschool.app.ui.screens.profile.OrganizationPicker(app.authManager, app.apiClient, required = true, onLogout = { repository.logout() })
+                } else key(profileRevision) {
                 // If logged in and onboarding not completed, show onboarding wizard
                 if (repository.isUserLoggedIn() && !themeSettings.hasCompletedOnboarding) {
                     OnboardingScreen(
@@ -299,6 +303,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
     }
 
     override fun onNewIntent(intent: Intent) {

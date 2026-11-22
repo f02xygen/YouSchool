@@ -1,11 +1,9 @@
 package org.youschool.app.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 
 private fun createScheme(
     primary: Color,
@@ -396,6 +394,8 @@ internal fun getStaticColorScheme(palette: AppColorPalette, isDark: Boolean): Co
     }
 }
 
+val LocalThemeSettings = compositionLocalOf { ThemeSettings() }
+
 @Composable
 fun YouSchoolTheme(
     settings: ThemeSettings = ThemeSettings(),
@@ -409,12 +409,7 @@ fun YouSchoolTheme(
     }
     val isAmoled = settings.themeMode == AppThemeMode.AMOLED
 
-    val baseScheme = if (settings.isDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        val context = LocalContext.current
-        if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    } else {
-        getStaticColorScheme(settings.colorPalette, isDark)
-    }
+    val baseScheme = platformColorScheme(settings, isDark) ?: getStaticColorScheme(settings.colorPalette, isDark)
 
     val finalScheme = if (isAmoled) {
         baseScheme.copy(
@@ -434,6 +429,6 @@ fun YouSchoolTheme(
     MaterialTheme(
         colorScheme = finalScheme,
         typography = Typography,
-        content = content
+        content = { CompositionLocalProvider(LocalThemeSettings provides settings) { content() } }
     )
 }

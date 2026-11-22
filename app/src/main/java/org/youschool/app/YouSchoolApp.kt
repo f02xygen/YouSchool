@@ -39,10 +39,11 @@ class YouSchoolApp : Application() {
         instance = this
 
         themeManager = org.youschool.app.ui.theme.ThemeManager(this)
-        authManager = AuthManager(this)
-        database = YouSchoolDatabase.getInstance(this)
+        authManager = org.youschool.app.core.auth.AndroidAuthManager(this)
+        val platform = org.youschool.app.core.platform.AndroidPlatform(this)
+        database = platform.database(authManager.contextKey()) as YouSchoolDatabase
         apiClient = EschoolApiClient(authManager)
-        repository = SchoolRepositoryImpl(this, database, apiClient, authManager)
+        repository = SchoolRepositoryImpl(platform, apiClient, authManager)
 
         networkMonitor = NetworkMonitor(this)
         syncManager = org.youschool.app.core.sync.SyncManager(repository, networkMonitor)

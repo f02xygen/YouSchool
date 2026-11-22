@@ -5,6 +5,9 @@ import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -42,23 +45,23 @@ class NotificationIntegrationTest {
         val prefs = app.getSharedPreferences("youschool_notification_state", Context.MODE_PRIVATE)
         val userId = app.authManager.getUserId()
         val period = app.apiClient.getDefaultPeriodId(userId).getOrThrow()
-        val key = "grades_${userId}_$period"
+        val key = "grades_${app.authManager.contextKey()}_$period"
         try {
             app.themeManager.setNotificationsEnabled(true)
             app.themeManager.setGradeNotificationsEnabled(true)
             app.repository.syncGrades().getOrThrow()
-            val seen = prefs.getStringSet(key, null)!!.toSet()
+            val seen = Json.decodeFromString<Set<String>>(prefs.getString(key, null)!!)
             assumeTrue(seen.isNotEmpty())
             val one = seen.first()
             NotificationHelper.cancelAll(app)
-            prefs.edit().putStringSet(key, seen - one).commit()
+            prefs.edit().putString(key, Json.encodeToString(seen - one)).commit()
             app.repository.syncGrades().getOrThrow()
             assertNotNull(manager.activeNotifications.find { it.id == 2001 })
             NotificationHelper.cancelAll(app)
             app.repository.syncGrades().getOrThrow()
             assertNull(manager.activeNotifications.find { it.id == 2001 })
             app.themeManager.setGradeNotificationsEnabled(false)
-            prefs.edit().putStringSet(key, seen - one).commit()
+            prefs.edit().putString(key, Json.encodeToString(seen - one)).commit()
             app.repository.syncGrades().getOrThrow()
             assertNull(manager.activeNotifications.find { it.id == 2001 })
         } finally {

@@ -29,7 +29,7 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-class EschoolApiClient(private val authManager: AuthManager) {
+class EschoolApiClient(private val authManager: AuthManager, private val baseUrl: String = "https://app.eschool.center/ec-server") {
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -41,13 +41,13 @@ class EschoolApiClient(private val authManager: AuthManager) {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .addInterceptor(HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
+            level = HttpLoggingInterceptor.Level.NONE
         })
         .build()
 
+    private var validated = false
     private val chatClient = client.newBuilder().retryOnConnectionFailure(false).build()
 
-    private val baseUrl = "https://app.eschool.center/ec-server"
 
     private fun generateRandomAlphanumeric(length: Int): String {
         val chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -125,7 +125,18 @@ class EschoolApiClient(private val authManager: AuthManager) {
 
             // Запрашиваем состояние пользователя
             val stateResult = getStateInternal(sessionId, route)
-            stateResult
+            stateResult.mapCatching { state ->
+                val saved = authManager.selectedPosition(username)
+                val available = state.user?.positions.orEmpty().filter { it.posTypeCode == "S" }
+                val target = if (saved > 0) available.firstOrNull { it.userId == saved } else available.singleOrNull()
+                val actual = if (target?.userId != null && target.userId != (state.user?.userId ?: state.userId)) {
+                    setPositionInternal(target.userId, sessionId, route).getOrThrow()
+                } else state
+                if (target?.userId != null) authManager.selectPosition(target.userId, username)
+                authManager.acceptState(actual)
+                validated = true
+                actual
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -157,7 +168,53 @@ class EschoolApiClient(private val authManager: AuthManager) {
         }
     }
 
-    private suspend fun <T> executeWithAutoAuth(block: suspend (sessionId: String, route: String?) -> Result<T>): Result<T> = withContext(Dispatchers.IO) {
+    suspend fun refreshPositions(): Result<StateResponse> = authManager.sessionLock.run {
+        val result = getStateInternal(authManager.getSessionId() ?: return@run Result.failure(IOException("Войдите в аккаунт")), authManager.getRoute())
+        result.onSuccess { authManager.acceptState(it) }
+    }
+
+    private suspend fun setPositionInternal(id: Long, session: String, route: String?): Result<StateResponse> = withContext(Dispatchers.IO) {
+        try {
+            client.newCall(Request.Builder().url("$baseUrl/setUser/$id")
+                .header("Cookie", buildCookieHeader(session, route)).put(ByteArray(0).toRequestBody()).build()).execute().use { response ->
+                if (!response.isSuccessful) return@withContext Result.failure(IOException("Смена организации: HTTP ${response.code}"))
+            }
+            getStateInternal(session, route)
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
+    }
+
+    suspend fun changePosition(id: Long): Result<StateResponse> = authManager.sessionLock.run {
+        if (authManager.positions.none { it.userId == id && it.posTypeCode == "S" }) return@run Result.failure(IOException("Ученический профиль недоступен"))
+        val result = setPositionInternal(id, authManager.getSessionId() ?: return@run Result.failure(IOException("Войдите в аккаунт")), authManager.getRoute())
+        if (result.isSuccess && (result.getOrThrow().user?.userId ?: result.getOrThrow().userId) == id) {
+            authManager.positionError.value = null
+            authManager.selectPosition(id)
+            authManager.acceptState(result.getOrThrow())
+            result
+        } else {
+            // A timeout may happen after the server switched; reconcile before another request.
+            authManager.positionError.value = "Не удалось подтвердить смену организации. Выберите профиль снова."
+            authManager.selectPosition(-1)
+            refreshPositions().onFailure { authManager.saveUserInfo(-1, -1, authManager.getFullName(), ""); authManager.revision.value++ }
+            Result.failure(result.exceptionOrNull() ?: IOException("Сервер не подтвердил выбранный профиль"))
+        }
+    }
+
+    private suspend fun <T> executeWithAutoAuth(block: suspend (String, String?) -> Result<T>): Result<T> = authManager.sessionLock.run {
+        if (!validated) {
+            val user = authManager.getLogin()
+            val hash = authManager.getPasswordHash()
+            if (user != null && hash != null) {
+                val state = login(user, hash)
+                if (state.isFailure) return@run Result.failure(state.exceptionOrNull()!!)
+            }
+        }
+        if (authManager.selectionRequired || authManager.getUserId() <= 0) return@run Result.failure(IOException("Выберите ученическую организацию в профиле"))
+        executeWithAutoAuthUnlocked(block)
+    }
+
+    private suspend fun <T> executeWithAutoAuthUnlocked(block: suspend (sessionId: String, route: String?) -> Result<T>): Result<T> = withContext(Dispatchers.IO) {
+        val requestedContext = authManager.contextKey()
         var sessionId = authManager.getSessionId()
         var route = authManager.getRoute()
 
@@ -176,6 +233,7 @@ class EschoolApiClient(private val authManager: AuthManager) {
             }
         }
 
+        if (authManager.contextKey() != requestedContext) return@withContext Result.failure(IOException("Организация изменилась. Обновите данные"))
         val firstAttempt = block(sessionId!!, route)
         if (firstAttempt.isFailure && firstAttempt.exceptionOrNull()?.message?.contains("401") == true) {
             // Re-login on 401
@@ -184,6 +242,7 @@ class EschoolApiClient(private val authManager: AuthManager) {
             if (!login.isNullOrBlank() && !hash.isNullOrBlank()) {
                 val loginResult = login(login, hash)
                 if (loginResult.isSuccess) {
+                    if (authManager.selectionRequired || authManager.contextKey() != requestedContext) return@withContext Result.failure(IOException("Выберите организацию"))
                     return@withContext block(authManager.getSessionId()!!, authManager.getRoute())
                 }
             }
@@ -471,7 +530,6 @@ class EschoolApiClient(private val authManager: AuthManager) {
                     if (response.code == 401) return@executeWithAutoAuth Result.failure(IOException("401 Unauthorized"))
                     if (response.isSuccessful) {
                         val bytes = response.body?.bytes() ?: byteArrayOf()
-                        android.util.Log.d("EschoolFile", "URL: $url, code: ${response.code}, bytes: ${bytes.size}")
                         if (bytes.isNotEmpty()) {
                             destinationFile.parentFile?.mkdirs()
                             destinationFile.writeBytes(bytes)
@@ -498,7 +556,7 @@ class EschoolApiClient(private val authManager: AuthManager) {
                 val doneVal = if (isDone) 1 else 0
                 val recheckParam = if (needRecheck) "&needRecheck=1" else ""
                 val jsonBody = if (!comment.isNullOrBlank()) {
-                    org.json.JSONObject().apply { put("pupilComm", comment) }.toString()
+                    kotlinx.serialization.json.buildJsonObject { put("pupilComm", kotlinx.serialization.json.JsonPrimitive(comment)) }.toString()
                 } else "{}"
                 val request = Request.Builder()
                     .url("$baseUrl/student/hw?partId=$partId&isDone=$doneVal$recheckParam")

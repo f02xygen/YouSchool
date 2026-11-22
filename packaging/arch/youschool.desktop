@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=YouSchool
+Comment=Электронный дневник eSchool
+Exec=youschool
+Icon=youschool
+Terminal=false
+Categories=Education;
+StartupWMClass=org-youschool-desktop-MainKt

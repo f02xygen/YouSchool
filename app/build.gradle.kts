@@ -75,6 +75,8 @@ android {
         jvmTarget = "17"
     }
 
+    sourceSets.getByName("main").java.srcDir("../shared-ui/src/main/kotlin")
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -93,6 +95,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":shared"))
     // Core & Lifecycle
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")

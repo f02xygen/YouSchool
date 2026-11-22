@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
+<!-- Adapted from the existing YouSchool Android vector icon. -->
+<rect width="108" height="108" rx="24" fill="#F6F1FF"/>
+<g transform="translate(54.000 51.883) rotate(0)">
+<path fill="#553491" d="M 0,-5.890 a 5.890,5.890 0 0 1 5.890,5.890 v 16.895 a 5.890,5.890 0 0 1 -11.780,0 v -16.895 a 5.890,5.890 0 0 1 5.890,-5.890 z"/>
+</g>
+<g transform="translate(54.000 54.208) rotate(212.0)">
+<path fill="#D0BCFF" d="M 0,-5.890 a 5.890,5.890 0 0 1 5.890,5.890 v 17.670 a 5.890,5.890 0 0 1 -11.780,0 v -17.670 a 5.890,5.890 0 0 1 5.890,-5.890 z"/>
+</g>
+<g transform="translate(54.000 54.208) rotate(148.0)">
+<path fill="#7C4DFF" d="M 0,-5.890 a 5.890,5.890 0 0 1 5.890,5.890 v 17.670 a 5.890,5.890 0 0 1 -11.780,0 v -17.670 a 5.890,5.890 0 0 1 5.890,-5.890 z"/>
+</g>
+</svg>

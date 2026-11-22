@@ -82,6 +82,8 @@ fun ProfileScreen(
     onNavigate: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val app = LocalContext.current.applicationContext as? org.youschool.app.YouSchoolApp
+    val profileRevision = app?.authManager?.revision?.collectAsState()?.value
     val profile = repository.getUserProfile()
     val themeSettings by themeManager.themeSettings.collectAsState()
     var selectedSection by rememberSaveable { mutableStateOf<ProfileSettingsSection?>(null) }
@@ -268,6 +270,7 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+                if (app != null) OrganizationPicker(app.authManager, app.apiClient)
                 ProfileSettingsSection.entries.forEach { section ->
                     val summary = when (section) {
                         ProfileSettingsSection.APPEARANCE -> "${themeSettings.themeMode.title} · ${if (themeSettings.isDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "Адаптивная" else themeSettings.colorPalette.title}"

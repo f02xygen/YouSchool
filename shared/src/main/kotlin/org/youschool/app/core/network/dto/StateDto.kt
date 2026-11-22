@@ -24,11 +24,15 @@ data class UserDto(
     val userId: Long? = null,
     val prsId: Long? = null,
     val roles: List<String> = emptyList(),
-    val currentPosition: PositionDto? = null
+    val currentPosition: PositionDto? = null,
+    val positions: List<PositionDto> = emptyList()
 )
 
 @Serializable
 data class PositionDto(
+    val userId: Long? = null,
+    val prsId: Long? = null,
+    val posTypeCode: String? = null,
     val orgId: Long? = null,
     val orgName: String? = null,
     val orgFullName: String? = null,

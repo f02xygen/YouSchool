@@ -629,7 +629,7 @@ fun LessonCard(
                 } else if (!lesson.gradeValue.isNullOrBlank()) {
                     val fallbackWeight = lesson.gradeWeight?.toDouble()
                     val fallbackGrade = remember(lesson, fallbackWeight) {
-                        val numVal = lesson.gradeValue.toDoubleOrNull() ?: 0.0
+                        val numVal = lesson.gradeValue?.toDoubleOrNull() ?: 0.0
                         val dateFormatted = try {
                             val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
                             sdf.format(Date(lesson.dateMillis))
@@ -640,7 +640,7 @@ fun LessonCard(
                             id = lesson.id.toString(),
                             lessonId = lesson.id,
                             subjectName = lesson.subjectName,
-                            value = lesson.gradeValue,
+                            value = lesson.gradeValue.orEmpty(),
                             numericValue = numVal,
                             weight = fallbackWeight ?: 1.0,
                             date = dateFormatted,
@@ -649,7 +649,7 @@ fun LessonCard(
                         )
                     }
                     GradeBadge(
-                        mark = lesson.gradeValue,
+                        mark = lesson.gradeValue.orEmpty(),
                         weight = fallbackWeight,
                         showWeightSuperscript = true,
                         onClick = { selectedGradeForDetails = fallbackGrade }
@@ -747,75 +747,6 @@ fun LessonCard(
                 }
             }
         }
-    }
-}
-
-@Composable
-fun GradeBadge(
-    mark: String,
-    weight: Double? = null,
-    modifier: Modifier = Modifier,
-    showWeightSuperscript: Boolean = true,
-    isCompact: Boolean = false,
-    onClick: (() -> Unit)? = null
-) {
-    val themeSettings by YouSchoolApp.instance.themeManager.themeSettings.collectAsState()
-    val (bgColor, textColor) = remember(mark, weight, themeSettings) {
-        GradeColorCalculator.calculateGradeColor(mark, weight, themeSettings)
-    }
-
-    val displayText = remember(mark, weight, showWeightSuperscript, isCompact, themeSettings.showGradeWeights, themeSettings.gradeWeightPosition) {
-        if (themeSettings.showGradeWeights && showWeightSuperscript && weight != null && weight != 1.0) {
-            val weightStr = formatGradeWeight(weight)
-            val shift = if (themeSettings.gradeWeightPosition == GradeWeightPosition.SUBSCRIPT) {
-                BaselineShift.Subscript
-            } else {
-                BaselineShift.Superscript
-            }
-            buildAnnotatedString {
-                append(mark)
-                withStyle(
-                    SpanStyle(
-                        baselineShift = shift,
-                        fontSize = if (isCompact) 8.sp else 10.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                ) {
-                    append(weightStr)
-                }
-            }
-        } else {
-            AnnotatedString(mark)
-        }
-    }
-
-    val haptic = rememberHaptic()
-    val baseModifier = if (onClick != null) {
-        modifier
-            .clip(MaterialTheme.shapes.small)
-            .clickable {
-                haptic.click()
-                onClick()
-            }
-    } else {
-        modifier
-    }
-
-    Surface(
-        shape = MaterialTheme.shapes.small,
-        color = bgColor,
-        modifier = baseModifier
-    ) {
-        Text(
-            text = displayText,
-            style = if (isCompact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = textColor,
-            modifier = Modifier.padding(
-                horizontal = if (isCompact) 6.dp else 10.dp,
-                vertical = if (isCompact) 2.dp else 2.dp
-            )
-        )
     }
 }
 

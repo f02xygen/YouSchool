@@ -20,4 +20,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "YouSchool"
-include(":app")
+if (!providers.gradleProperty("desktopOnly").map(String::toBoolean).getOrElse(false)) include(":app")
+
+include(":shared", ":desktop")

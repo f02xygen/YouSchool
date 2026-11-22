@@ -1,0 +1,21 @@
+# Build the application archive first with scripts/build-arch.sh.
+pkgname=youschool
+pkgver=0.3.11
+pkgrel=1
+pkgdesc='Неофициальный клиент электронного дневника eSchool'
+arch=('x86_64')
+options=('!strip' '!debug')
+url='https://github.com/f02xygen/YouSchool'
+license=('GPL-3.0-or-later' 'MIT')
+depends=('glibc' 'gcc-libs' 'libx11' 'libxext' 'libxi' 'libxrender' 'libxtst' 'fontconfig' 'freetype2' 'alsa-lib' 'libglvnd' 'libnotify' 'libsecret' 'gtk3')
+optdepends=('gnome-keyring: сохранение входа через Secret Service' 'kwallet: сохранение входа через Secret Service')
+source=("youschool_${pkgver}_linux_x86_64.tar.gz")
+sha256sums=('SKIP') # Locally generated archive; build-arch.sh supplies its SHA-256 before makepkg.
+
+package() {
+    install -d "$pkgdir/opt/youschool" "$pkgdir/usr/bin"
+    cp -a "$srcdir/youschool/." "$pkgdir/opt/youschool/"
+    ln -s /opt/youschool/start-youschool "$pkgdir/usr/bin/youschool"
+    install -Dm644 "$srcdir/youschool.desktop" "$pkgdir/usr/share/applications/youschool.desktop"
+    install -Dm644 "$srcdir/youschool.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/youschool.svg"
+}
