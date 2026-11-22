@@ -16,6 +16,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-35 build-tools;34.0.0 build-tools;35.0.0
       - uses: gradle/actions/setup-gradle@v4
       - run: bash ./gradlew :shared:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest --console=plain
       - uses: actions/upload-artifact@v4
@@ -48,6 +50,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-35 build-tools;34.0.0 build-tools;35.0.0
       - uses: gradle/actions/setup-gradle@v4
       - name: Enable KVM
         run: |

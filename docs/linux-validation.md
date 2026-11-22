@@ -30,10 +30,11 @@ SQLite/Secret Service/desktop notifications are separate adapters.
 
 ## Release gates and limits
 
-- Keep the PR as a draft until switching is exercised on a real account with two student
-  organizations. Fixtures are not evidence of server-side switching. Check both schools,
-  restart, session expiry and pending homework isolation; avoid changing live school data
-  or sending messages without a specifically authorized test.
+- The user reported successful testing on a real account with two student organizations.
+  This closes the live organization-switching draft gate. This is user-reported evidence;
+  the agent did not independently repeat that session. Restart, HTTP 401 and pending
+  homework isolation remain covered by automated checks, without claiming that the user
+  separately exercised each scenario.
 - reCAPTCHA uses JavaFX WebView on the real eSchool origin and its token callback;
   completing a live challenge has not been verified.
 - Secret Service storage and Linux notification delivery are integrated, but a full
